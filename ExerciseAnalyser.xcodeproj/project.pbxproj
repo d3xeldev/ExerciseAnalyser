@@ -7,7 +7,11 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		433E5E3A307F86870027E89B /* AppIcon.icon in Resources */ = {isa = PBXBuildFile; fileRef = 433E5E39307F86870027E89B /* AppIcon.icon */; };
 		43DBB762307A3E9300F24E6C /* ExerciseAnalyser Watch App.app in Embed Watch Content */ = {isa = PBXBuildFile; fileRef = 43DBB761307A3E9300F24E6C /* ExerciseAnalyser Watch App.app */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		A10000000000000000000001 /* MoveMoment Complications.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = A10000000000000000000002 /* MoveMoment Complications.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		A10000000000000000000003 /* ComplicationSnapshot.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000004 /* ComplicationSnapshot.swift */; };
+		A20000000000000000000001 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000002 /* Assets.xcassets */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -17,6 +21,13 @@
 			proxyType = 1;
 			remoteGlobalIDString = 43DBB760307A3E9300F24E6C;
 			remoteInfo = "ExerciseAnalyser Watch App";
+		};
+		A10000000000000000000006 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 43DBB755307A3E9200F24E6C /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = A10000000000000000000007;
+			remoteInfo = "MoveMoment Complications";
 		};
 /* End PBXContainerItemProxy section */
 
@@ -30,11 +41,24 @@
 			);
 			name = "Embed Watch Content";
 		};
+		A10000000000000000000009 /* Embed App Extensions */ = {
+			isa = PBXCopyFilesBuildPhase;
+			dstPath = "";
+			dstSubfolder = PlugIns;
+			files = (
+				A10000000000000000000001 /* MoveMoment Complications.appex in Embed App Extensions */,
+			);
+			name = "Embed App Extensions";
+		};
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
+		433E5E39307F86870027E89B /* AppIcon.icon */ = {isa = PBXFileReference; lastKnownFileType = folder.iconcomposer.icon; path = AppIcon.icon; sourceTree = "<group>"; };
 		43DBB75B307A3E9300F24E6C /* ExerciseAnalyser.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = ExerciseAnalyser.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		43DBB761307A3E9300F24E6C /* ExerciseAnalyser Watch App.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "ExerciseAnalyser Watch App.app"; sourceTree = BUILT_PRODUCTS_DIR; };
+		A10000000000000000000002 /* MoveMoment Complications.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; path = "MoveMoment Complications.appex"; sourceTree = BUILT_PRODUCTS_DIR; };
+		A10000000000000000000004 /* ComplicationSnapshot.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = ComplicationSnapshot.swift; path = "ExerciseAnalyser Watch App/Core/ComplicationSnapshot.swift"; sourceTree = SOURCE_ROOT; };
+		A20000000000000000000002 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; name = Assets.xcassets; path = "ExerciseAnalyser Watch App/Assets.xcassets"; sourceTree = SOURCE_ROOT; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -43,10 +67,20 @@
 			path = "ExerciseAnalyser Watch App";
 			sourceTree = "<group>";
 		};
+		A10000000000000000000005 /* MoveMoment Complications */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = "MoveMoment Complications";
+			sourceTree = "<group>";
+		};
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
 		43DBB75E307A3E9300F24E6C /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			files = (
+			);
+		};
+		A1000000000000000000000B /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			files = (
 			);
@@ -58,7 +92,11 @@
 			isa = PBXGroup;
 			children = (
 				43DBB765307A3E9300F24E6C /* ExerciseAnalyser Watch App */,
+				A10000000000000000000005 /* MoveMoment Complications */,
+				A10000000000000000000004 /* ComplicationSnapshot.swift */,
+				A20000000000000000000002 /* Assets.xcassets */,
 				43DBB75C307A3E9300F24E6C /* Products */,
+				433E5E39307F86870027E89B /* AppIcon.icon */,
 			);
 			sourceTree = "<group>";
 		};
@@ -67,6 +105,7 @@
 			children = (
 				43DBB75B307A3E9300F24E6C /* ExerciseAnalyser.app */,
 				43DBB761307A3E9300F24E6C /* ExerciseAnalyser Watch App.app */,
+				A10000000000000000000002 /* MoveMoment Complications.appex */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -98,8 +137,12 @@
 				43DBB75D307A3E9300F24E6C /* Sources */,
 				43DBB75E307A3E9300F24E6C /* Frameworks */,
 				43DBB75F307A3E9300F24E6C /* Resources */,
+				A10000000000000000000009 /* Embed App Extensions */,
 			);
 			buildRules = (
+			);
+			dependencies = (
+				A10000000000000000000008 /* PBXTargetDependency */,
 			);
 			fileSystemSynchronizedGroups = (
 				43DBB765307A3E9300F24E6C /* ExerciseAnalyser Watch App */,
@@ -108,6 +151,24 @@
 			productName = "ExerciseAnalyser Watch App";
 			productReference = 43DBB761307A3E9300F24E6C /* ExerciseAnalyser Watch App.app */;
 			productType = "com.apple.product-type.application";
+		};
+		A10000000000000000000007 /* MoveMoment Complications */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = A1000000000000000000000D /* Build configuration list for PBXNativeTarget "MoveMoment Complications" */;
+			buildPhases = (
+				A1000000000000000000000A /* Sources */,
+				A1000000000000000000000B /* Frameworks */,
+				A1000000000000000000000C /* Resources */,
+			);
+			buildRules = (
+			);
+			fileSystemSynchronizedGroups = (
+				A10000000000000000000005 /* MoveMoment Complications */,
+			);
+			name = "MoveMoment Complications";
+			productName = "MoveMoment Complications";
+			productReference = A10000000000000000000002 /* MoveMoment Complications.appex */;
+			productType = "com.apple.product-type.app-extension";
 		};
 /* End PBXNativeTarget section */
 
@@ -143,6 +204,7 @@
 			targets = (
 				43DBB75A307A3E9300F24E6C /* ExerciseAnalyser */,
 				43DBB760307A3E9300F24E6C /* ExerciseAnalyser Watch App */,
+				A10000000000000000000007 /* MoveMoment Complications */,
 			);
 		};
 /* End PBXProject section */
@@ -156,6 +218,13 @@
 		43DBB75F307A3E9300F24E6C /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			files = (
+				433E5E3A307F86870027E89B /* AppIcon.icon in Resources */,
+			);
+		};
+		A1000000000000000000000C /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			files = (
+				A20000000000000000000001 /* Assets.xcassets in Resources */,
 			);
 		};
 /* End PBXResourcesBuildPhase section */
@@ -166,6 +235,12 @@
 			files = (
 			);
 		};
+		A1000000000000000000000A /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			files = (
+				A10000000000000000000003 /* ComplicationSnapshot.swift in Sources */,
+			);
+		};
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
@@ -173,6 +248,11 @@
 			isa = PBXTargetDependency;
 			target = 43DBB760307A3E9300F24E6C /* ExerciseAnalyser Watch App */;
 			targetProxy = 43DBB763307A3E9300F24E6C /* PBXContainerItemProxy */;
+		};
+		A10000000000000000000008 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = A10000000000000000000007 /* MoveMoment Complications */;
+			targetProxy = A10000000000000000000006 /* PBXContainerItemProxy */;
 		};
 /* End PBXTargetDependency section */
 
@@ -298,12 +378,17 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_ENTITLEMENTS = "ExerciseAnalyser Watch App/ExerciseAnalyser.entitlements";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 2;
 				DEVELOPMENT_TEAM = 3DGR463ZY2;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = "ExerciseAnalyser-Watch-Info.plist";
 				INFOPLIST_KEY_CFBundleDisplayName = ExerciseAnalyser;
+				INFOPLIST_KEY_NSCalendarsFullAccessUsageDescription = "Read busy times to avoid interrupting events and fit movement into free time. The app never changes your calendar.";
+				INFOPLIST_KEY_NSHealthShareUsageDescription = "Use activity, heart rate, sleep, and workouts to find suitable moments for movement breaks.";
+				INFOPLIST_KEY_NSMotionUsageDescription = "Use motion history to avoid reminders while moving or travelling and estimate low-movement periods.";
 				INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown";
 				INFOPLIST_KEY_WKWatchOnly = YES;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -331,12 +416,17 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_ENTITLEMENTS = "ExerciseAnalyser Watch App/ExerciseAnalyser.entitlements";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 2;
 				DEVELOPMENT_TEAM = 3DGR463ZY2;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = "ExerciseAnalyser-Watch-Info.plist";
 				INFOPLIST_KEY_CFBundleDisplayName = ExerciseAnalyser;
+				INFOPLIST_KEY_NSCalendarsFullAccessUsageDescription = "Read busy times to avoid interrupting events and fit movement into free time. The app never changes your calendar.";
+				INFOPLIST_KEY_NSHealthShareUsageDescription = "Use activity, heart rate, sleep, and workouts to find suitable moments for movement breaks.";
+				INFOPLIST_KEY_NSMotionUsageDescription = "Use motion history to avoid reminders while moving or travelling and estimate low-movement periods.";
 				INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown";
 				INFOPLIST_KEY_WKWatchOnly = YES;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -364,7 +454,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 2;
 				DEVELOPMENT_TEAM = 3DGR463ZY2;
 				INFOPLIST_KEY_CFBundleDisplayName = ExerciseAnalyser;
 				IPHONEOS_DEPLOYMENT_TARGET = 27.0;
@@ -382,7 +472,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 2;
 				DEVELOPMENT_TEAM = 3DGR463ZY2;
 				INFOPLIST_KEY_CFBundleDisplayName = ExerciseAnalyser;
 				IPHONEOS_DEPLOYMENT_TARGET = 27.0;
@@ -394,6 +484,62 @@
 				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
 				SWIFT_VERSION = 5.0;
 				VALIDATE_PRODUCT = YES;
+			};
+			name = Release;
+		};
+		A1000000000000000000000E /* Debug configuration for PBXNativeTarget "MoveMoment Complications" */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				APPLICATION_EXTENSION_API_ONLY = YES;
+				CODE_SIGN_ENTITLEMENTS = "MoveMoment Complications/MoveMomentComplications.entitlements";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 2;
+				DEVELOPMENT_TEAM = 3DGR463ZY2;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = "MoveMoment-Complications-Info.plist";
+				INFOPLIST_KEY_CFBundleDisplayName = "Move Moment";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.d3xel.ExerciseAnalyser.watchkitapp.complications;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = watchos;
+				SKIP_INSTALL = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 4;
+				WATCHOS_DEPLOYMENT_TARGET = 27.0;
+			};
+			name = Debug;
+		};
+		A1000000000000000000000F /* Release configuration for PBXNativeTarget "MoveMoment Complications" */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				APPLICATION_EXTENSION_API_ONLY = YES;
+				CODE_SIGN_ENTITLEMENTS = "MoveMoment Complications/MoveMomentComplications.entitlements";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 2;
+				DEVELOPMENT_TEAM = 3DGR463ZY2;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = "MoveMoment-Complications-Info.plist";
+				INFOPLIST_KEY_CFBundleDisplayName = "Move Moment";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.d3xel.ExerciseAnalyser.watchkitapp.complications;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = watchos;
+				SKIP_INSTALL = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 4;
+				WATCHOS_DEPLOYMENT_TARGET = 27.0;
 			};
 			name = Release;
 		};
@@ -421,6 +567,14 @@
 			buildConfigurations = (
 				43DBB773307A3E9500F24E6C /* Debug configuration for PBXNativeTarget "ExerciseAnalyser" */,
 				43DBB774307A3E9500F24E6C /* Release configuration for PBXNativeTarget "ExerciseAnalyser" */,
+			);
+			defaultConfigurationName = Release;
+		};
+		A1000000000000000000000D /* Build configuration list for PBXNativeTarget "MoveMoment Complications" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				A1000000000000000000000E /* Debug configuration for PBXNativeTarget "MoveMoment Complications" */,
+				A1000000000000000000000F /* Release configuration for PBXNativeTarget "MoveMoment Complications" */,
 			);
 			defaultConfigurationName = Release;
 		};

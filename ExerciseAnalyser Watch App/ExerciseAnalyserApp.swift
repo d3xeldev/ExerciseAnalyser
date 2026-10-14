@@ -1,17 +1,17 @@
-//
-//  ExerciseAnalyserApp.swift
-//  ExerciseAnalyser Watch App
-//
-//  Created by Daniel Nunes on 10/10/2026.
-//
-
 import SwiftUI
 
 @main
 struct ExerciseAnalyser_Watch_AppApp: App {
+    @WKApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
+    @Environment(\.scenePhase) private var scenePhase
+
     var body: some Scene {
         WindowGroup {
             ContentView()
+                .task { await AppModel.shared.foreground() }
+                .onChange(of: scenePhase) { _, phase in
+                    if phase == .active { Task { await AppModel.shared.foreground() } }
+                }
         }
     }
 }
