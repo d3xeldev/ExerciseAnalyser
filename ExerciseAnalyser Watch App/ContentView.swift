@@ -190,6 +190,8 @@ struct ContentView: View {
 
     private var more: some View {
         List {
+            Button("Trigger intervention") { model.triggerManualIntervention() }
+                .disabled(!model.dataAvailable)
             NavigationLink("Study log", value: WatchDestination.log)
             NavigationLink("Your signals", value: WatchDestination.signals)
         }.navigationTitle("More")

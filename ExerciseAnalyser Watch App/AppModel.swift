@@ -480,6 +480,38 @@ final class AppModel {
         await evaluate(source: "calendar_changed")
     }
 
+    func triggerManualIntervention() {
+        if let prompt = activePrompt ?? currentPrompt {
+            requestedPromptID = prompt.id
+            navigationRequest = UUID()
+            return
+        }
+        let now = Date()
+        let snapshot = context.flatMap { $0.isTimelyForDecision(at: now) ? $0 : nil }
+            ?? ContextSnapshot(date: now, localHour: Calendar.current.component(.hour, from: now))
+        // A user-requested break bypasses automatic timing and inactivity gates.
+        let manualDecision = OpportunityDecision(shouldNotify: true, score: 0, reasons: ["Manually requested"],
+                                                 availableMinutes: Double((Exercise.catalog.map(\.minutes).max() ?? 0) + 2))
+        let seed = UInt64.random(in: UInt64.min...UInt64.max)
+        var rng = StudyRandom(seed: seed)
+        guard var prompt = RecommendationEngine.makePrompt(context: snapshot, decision: manualDecision, settings: settings,
+                                                            history: state.prompts, randomizationSeed: String(seed),
+                                                            deliveryReason: "manual_intervention", rng: &rng) else {
+            message = "Enable at least one exercise at each effort level."
+            return
+        }
+        // Make the invitation available in-app without scheduling a notification.
+        prompt.status = .scheduled
+        do {
+            try mutate { state in
+                state.prompts.append(prompt)
+                state.events.append(.init(date: now, kind: "manual_intervention", promptID: prompt.id, source: "app"))
+            }
+            requestedPromptID = prompt.id
+            navigationRequest = UUID()
+        } catch { message = error.localizedDescription }
+    }
+
     func choose(promptID: UUID, exerciseID: String?, source: String = "app", at date: Date = Date()) {
         defer { publishComplications(); scheduleRefresh() }
         guard let store else { return }
