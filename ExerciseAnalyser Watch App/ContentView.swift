@@ -35,11 +35,7 @@ struct ContentView: View {
         .onOpenURL { url in
             guard let kind = ComplicationKind.allCases.first(where: { $0.url == url }) else { return }
             model.complicationOpened(kind)
-            switch kind {
-            case .moment: path = []; openCurrentBreak()
-            case .activity: path = [.signals]
-            default: path = [.log]
-            }
+            path = []
         }
         .onChange(of: model.navigationRequest) { routeRequestedPrompt() }
         .task {

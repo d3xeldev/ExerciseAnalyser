@@ -50,7 +50,7 @@ struct MovementComplicationView: View {
     private var color: Color {
         switch kind {
         case .moment: ready ? .mint : .cyan
-        case .activity: .orange
+        case .activity: .blue
         case .breaks: .mint
         }
     }
@@ -99,6 +99,7 @@ struct MovementComplicationView: View {
             default: rectangular
             }
         }
+        .modifier(ComplicationContentLayout())
         .containerBackground(for: .widget) { Color.black }
         .widgetURL(kind.url)
         .privacySensitive()
@@ -151,7 +152,7 @@ struct MovementComplicationView: View {
             case .moment:
                 Text(snapshot.dataAvailable && snapshot.monitoring && fresh && !ready && snapshot.activeExerciseTitle == nil && snapshot.lowMovementMinutes != nil
                      ? "\(value) min low movement" : snapshot.title(at: entry.date))
-            case .activity: Text("Steps today").foregroundStyle(Color("AccentColor"))
+            case .activity: Text("Steps today").foregroundStyle(.blue)
             case .breaks: Text("Breaks today").foregroundStyle(Color("AccentColor"))
             }
         }
@@ -171,29 +172,15 @@ struct MovementComplicationView: View {
         VStack(alignment: .leading, spacing: 3) {
             switch kind {
             case .moment:
-                Label(snapshot.title(at: entry.date), systemImage: symbol)
-                    .font(.headline).foregroundStyle(color).widgetAccentable()
+                RectangularComplicationHeader(title: snapshot.title(at: entry.date), symbol: symbol).foregroundStyle(color).widgetAccentable()
                 Text(snapshot.detail(at: entry.date)).font(.caption).lineLimit(2)
                 updatedLabel
             case .activity:
-                Label("Daily movement", systemImage: symbol).font(.headline).foregroundStyle(color).widgetAccentable()
-                HStack(alignment: .firstTextBaseline, spacing: 8) {
-                    Text(value).font(.system(.title2, design: .rounded).bold())
-                    Text("steps").font(.caption)
-                    Spacer(minLength: 0)
-                    Text(activityAvailable ? snapshot.exerciseMinutes.map { "\(Int($0)) min" } ?? "— min" : "— min")
-                        .font(.caption.bold())
-                }
-                updatedLabel
+                WeeklyTotalsView(days: snapshot.weeklyStepDays(at: entry.date), date: entry.date,
+                                 title: "Weekly movement", symbol: symbol, color: color, unit: "steps")
             case .breaks:
-                HStack {
-                    Label("Movement breaks", systemImage: symbol).font(.headline).foregroundStyle(color).widgetAccentable()
-                    Spacer(minLength: 0)
-                    Text(value).font(.system(.title2, design: .rounded).bold())
-                }
-                Text("Reported complete today").font(.caption)
-                Text(snapshot.activeExerciseTitle ?? (ready ? "A new break is ready" : "Small breaks add up"))
-                    .font(.caption2).foregroundStyle(.secondary)
+                WeeklyTotalsView(days: snapshot.weeklyBreakDays(at: entry.date), date: entry.date,
+                                 title: "Weekly breaks", symbol: symbol, color: color, unit: "breaks")
             }
         }
         .lineLimit(1)
@@ -220,7 +207,8 @@ struct MomentWidget: Widget {
         }
         .configurationDisplayName("Moment")
         .description("Monitoring status, your last low-movement estimate, and invitations to move.")
-        .supportedFamilies([.accessoryCircular, .accessoryCorner, .accessoryInline, .accessoryRectangular])
+        .supportedFamilies([.accessoryCorner, .accessoryInline, .accessoryRectangular])
+        .contentMarginsDisabled()
     }
 }
 
@@ -230,8 +218,9 @@ struct ActivityWidget: Widget {
             MovementComplicationView(entry: $0, kind: .activity)
         }
         .configurationDisplayName("Daily Movement")
-        .description("Steps and exercise minutes from the latest automatic check.")
+        .description("Seven days of steps in the rectangular widget, and today’s steps in compact complications.")
         .supportedFamilies([.accessoryCircular, .accessoryCorner, .accessoryInline, .accessoryRectangular])
+        .contentMarginsDisabled()
     }
 }
 
@@ -241,8 +230,160 @@ struct BreaksWidget: Widget {
             MovementComplicationView(entry: $0, kind: .breaks)
         }
         .configurationDisplayName("Movement Breaks")
-        .description("Today's self-reported movement breaks and your current exercise.")
+        .description("Seven days of completed movement breaks in the rectangular widget, and today’s count in compact complications.")
         .supportedFamilies([.accessoryCircular, .accessoryCorner, .accessoryInline, .accessoryRectangular])
+        .contentMarginsDisabled()
+    }
+}
+
+private struct WeeklyTotalsView: View {
+    let days: [ComplicationSnapshot.DailyTotal]
+    let date: Date
+    let title: String
+    let symbol: String
+    let color: Color
+    let unit: String
+
+    var body: some View {
+        let maximum = max(1, days.compactMap(\.value).max() ?? 0)
+        VStack(alignment: .leading, spacing: 3) {
+            RectangularComplicationHeader(title: title, symbol: symbol)
+                .foregroundStyle(color)
+                .widgetAccentable()
+            HStack(spacing: 0) {
+                ForEach(days) { day in
+                    VStack(spacing: 3) {
+                        GeometryReader { geometry in
+                            ZStack(alignment: .bottom) {
+                                Capsule().fill(color.opacity(0.16))
+                                if let value = day.value, value > 0 {
+                                    Capsule().fill(color)
+                                        .frame(height: min(geometry.size.height, max(6, geometry.size.height * value / maximum)))
+                                }
+                                if day.value == nil {
+                                    Text("—").font(.system(size: 8)).foregroundStyle(.secondary)
+                                }
+                            }
+                            .frame(width: 6, height: geometry.size.height)
+                            .frame(maxWidth: .infinity)
+                        }
+                        Text(day.date.formatted(.dateTime.weekday(.narrow)))
+                            .font(.system(size: 10, weight: .semibold, design: .rounded))
+                            .foregroundStyle(Calendar.current.isDate(day.date, inSameDayAs: date) ? .primary : .secondary)
+                    }
+                    .frame(maxWidth: .infinity)
+                    .overlay(alignment: .leading) {
+                        if day.id != days.first?.id {
+                            Rectangle().fill(.white.opacity(0.18)).frame(width: 0.5)
+                        }
+                    }
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityLabel("\(day.date.formatted(date: .complete, time: .omitted)). " +
+                        (day.value.map { "\(Int($0)) \(unit)" } ?? "\(unit) unavailable"))
+                }
+            }
+        }
+    }
+}
+
+private struct ComplicationContentLayout: ViewModifier {
+    @Environment(\.widgetFamily) private var family
+    @Environment(\.widgetContentMargins) private var margins
+
+    func body(content: Content) -> some View {
+        if family == .accessoryRectangular {
+            content
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                .padding(EdgeInsets(top: min(margins.top, 6), leading: margins.leading,
+                                    bottom: min(margins.bottom, 6), trailing: margins.trailing))
+        } else {
+            // Restore the system insets for the other families after disabling automatic margins.
+            content.padding(margins)
+        }
+    }
+}
+
+private struct RectangularComplicationHeader: View {
+    let title: String
+    let symbol: String
+
+    var body: some View {
+        HStack(spacing: 4) {
+            Image(systemName: symbol)
+                .font(.system(size: 13, weight: .semibold))
+            Text(title)
+                .font(.system(size: 14, weight: .semibold))
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .lineLimit(1)
+        .minimumScaleFactor(0.75)
+        .padding(.bottom, 2)
+    }
+}
+
+private func effortMarkerPosition(counts: [Int]) -> Double {
+    let total = counts.reduce(0, +)
+    guard total > 0, let largest = counts.max(), let index = counts.firstIndex(of: largest) else { return 0.5 }
+    // Keep the system marker inside the largest slice; ties prefer the first slice.
+    let preceding = counts.prefix(index).reduce(0, +)
+    return (Double(preceding) + Double(largest) / 2) / Double(total)
+}
+
+private func effortGradient(counts: [Int]) -> Gradient {
+    let total = counts.reduce(0, +)
+    guard total > 0 else { return Gradient(colors: [.gray.opacity(0.35), .gray.opacity(0.35)]) }
+    let colors: [Color] = [.mint, .yellow, .orange]
+    var stops: [Gradient.Stop] = []
+    var offset = 0.0
+    for index in counts.indices where counts[index] > 0 {
+        stops.append(.init(color: colors[index], location: offset))
+        offset += Double(counts[index]) / Double(total)
+        stops.append(.init(color: colors[index], location: min(offset, 1)))
+    }
+    return Gradient(stops: stops)
+}
+
+struct DailyEffortView: View {
+    let entry: MovementEntry
+
+    private var counts: [Int] { entry.snapshot.dailyEffortCounts(at: entry.date).last?.counts ?? [0, 0, 0] }
+    private var total: Int { counts.reduce(0, +) }
+    private var summary: String {
+        guard entry.snapshot.dataAvailable else { return "Open Move Moment to set up" }
+        guard total > 0 else { return "No completed movement breaks today" }
+        let names = ["Low", "Moderate", "High"]
+        return "Today. \(total) completed breaks. " + counts.indices.map {
+            "\(names[$0]) \(counts[$0])"
+        }.joined(separator: ", ")
+    }
+
+    var body: some View {
+        Gauge(value: effortMarkerPosition(counts: counts), in: 0...1) {
+            Image(systemName: "figure.walk").widgetAccentable()
+        } currentValueLabel: {
+            Text(entry.snapshot.dataAvailable ? String(total) : "—")
+                .font(.system(.title3, design: .rounded).bold())
+                .lineLimit(1)
+                .minimumScaleFactor(0.6)
+        }
+        .gaugeStyle(.accessoryCircular)
+        .tint(effortGradient(counts: counts))
+        .containerBackground(for: .widget) { Color.black }
+        .widgetURL(ComplicationKind.breaks.url)
+        .privacySensitive()
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(summary)
+    }
+}
+
+struct DailyEffortWidget: Widget {
+    var body: some WidgetConfiguration {
+        StaticConfiguration(kind: "MoveMoment.DailyEffort", provider: MovementProvider()) {
+            DailyEffortView(entry: $0)
+        }
+        .configurationDisplayName("Daily Effort")
+        .description("Today's completed breaks, with low, moderate, and high effort shares around the ring.")
+        .supportedFamilies([.accessoryCircular])
     }
 }
 
@@ -252,29 +393,9 @@ struct WeeklyEffortView: View {
 
     private var counts: [Int] { entry.snapshot.weeklyEffortCounts(at: entry.date) }
     private var total: Int { counts.reduce(0, +) }
-    private var markerPosition: Double {
-        let counts = counts
-        let total = counts.reduce(0, +)
-        guard total > 0, let largest = counts.max(), let index = counts.firstIndex(of: largest) else { return 0.5 }
-        // Keep the system marker inside the largest slice; ties prefer the first slice.
-        let preceding = counts.prefix(index).reduce(0, +)
-        return (Double(preceding) + Double(largest) / 2) / Double(total)
-    }
+    private var markerPosition: Double { effortMarkerPosition(counts: counts) }
     private var gradient: Gradient { effortGradient(counts: counts) }
 
-    private func effortGradient(counts: [Int]) -> Gradient {
-        let total = counts.reduce(0, +)
-        guard total > 0 else { return Gradient(colors: [.gray.opacity(0.35), .gray.opacity(0.35)]) }
-        let colors: [Color] = [.mint, .yellow, .orange]
-        var stops: [Gradient.Stop] = []
-        var offset = 0.0
-        for index in counts.indices where counts[index] > 0 {
-            stops.append(.init(color: colors[index], location: offset))
-            offset += Double(counts[index]) / Double(total)
-            stops.append(.init(color: colors[index], location: min(offset, 1)))
-        }
-        return Gradient(stops: stops)
-    }
     private var summary: String {
         guard total > 0 else { return "No completed movement breaks in the last seven days" }
         let names = ["Low", "Moderate", "High"]
@@ -288,6 +409,7 @@ struct WeeklyEffortView: View {
             if family == .accessoryRectangular { rectangular }
             else { corner }
         }
+        .modifier(ComplicationContentLayout())
         .containerBackground(for: .widget) { Color.black }
         .widgetURL(ComplicationKind.breaks.url)
         .privacySensitive()
@@ -297,8 +419,7 @@ struct WeeklyEffortView: View {
         let days = entry.snapshot.dailyEffortCounts(at: entry.date)
         let maximum = max(1, days.map { $0.counts.reduce(0, +) }.max() ?? 0)
         return VStack(alignment: .leading, spacing: 3) {
-            Label("Weekly effort", systemImage: "figure.walk")
-                .font(.headline)
+            RectangularComplicationHeader(title: "Weekly effort", symbol: "figure.walk")
                 .foregroundStyle(Color("AccentColor"))
                 .widgetAccentable()
                 .lineLimit(1)
@@ -373,6 +494,7 @@ struct WeeklyEffortWidget: Widget {
         .configurationDisplayName("Weekly Effort")
         .description("The share of completed breaks at each effort level over the last seven days.")
         .supportedFamilies([.accessoryCorner, .accessoryRectangular])
+        .contentMarginsDisabled()
     }
 }
 
@@ -383,6 +505,7 @@ struct MoveMomentWidgetBundle: WidgetBundle {
         ActivityWidget()
         BreaksWidget()
         WeeklyEffortWidget()
+        DailyEffortWidget()
     }
 }
 
@@ -393,18 +516,22 @@ private enum ComplicationPreviewData {
         statusDetail: "Space for a movement break", lowMovementMinutes: 18,
         steps: 3250, exerciseMinutes: 18, completedToday: 2
     ))
+    static let weekly: MovementEntry = {
+        var snapshot = monitoring.snapshot
+        snapshot.stepHistory = (-6...0).map { offset in
+            .init(date: Calendar.current.date(byAdding: .day, value: offset, to: Calendar.current.startOfDay(for: date))!,
+                  value: offset == -3 ? nil : Double((offset + 7) * 1100))
+        }
+        snapshot.breakCompletions = (-6...0).flatMap { offset in
+            Array(repeating: Calendar.current.date(byAdding: .day, value: offset, to: date)!, count: (offset + 7) % 4)
+        }
+        return .init(date: date, snapshot: snapshot)
+    }()
     static let invitation = MovementEntry(date: date, snapshot: .init(
         generatedAt: date, monitoring: true, checkedAt: date,
         lowMovementMinutes: 38, steps: 3250, exerciseMinutes: 18, completedToday: 2,
         invitationExpiresAt: date.addingTimeInterval(600)
     ))
-}
-
-#Preview("Moment · Circular", as: .accessoryCircular) {
-    MomentWidget()
-} timeline: {
-    ComplicationPreviewData.monitoring
-    ComplicationPreviewData.invitation
 }
 
 #Preview("Moment · Corner", as: .accessoryCorner) {
@@ -426,6 +553,8 @@ private enum ComplicationPreviewData {
 } timeline: {
     ComplicationPreviewData.monitoring
     ComplicationPreviewData.invitation
+    MovementEntry(date: ComplicationPreviewData.date.addingTimeInterval(ComplicationSnapshot.freshness),
+                  snapshot: ComplicationPreviewData.monitoring.snapshot)
 }
 
 #Preview("Daily Movement · Circular", as: .accessoryCircular) {
@@ -449,7 +578,8 @@ private enum ComplicationPreviewData {
 #Preview("Daily Movement · Rectangular", as: .accessoryRectangular) {
     ActivityWidget()
 } timeline: {
-    ComplicationPreviewData.monitoring
+    ComplicationPreviewData.weekly
+    MovementEntry(date: ComplicationPreviewData.date, snapshot: .empty(at: ComplicationPreviewData.date))
 }
 
 #Preview("Movement Breaks · Circular", as: .accessoryCircular) {
@@ -473,7 +603,8 @@ private enum ComplicationPreviewData {
 #Preview("Movement Breaks · Rectangular", as: .accessoryRectangular) {
     BreaksWidget()
 } timeline: {
-    ComplicationPreviewData.monitoring
+    ComplicationPreviewData.weekly
+    MovementEntry(date: ComplicationPreviewData.date, snapshot: .empty(at: ComplicationPreviewData.date))
 }
 
 #Preview("Weekly Effort · Corner", as: .accessoryCorner) {
@@ -500,5 +631,18 @@ private enum ComplicationPreviewData {
             return efforts.map { .init(date: date, effort: $0) }
         }
     ))
+    MovementEntry(date: ComplicationPreviewData.date, snapshot: .empty(at: ComplicationPreviewData.date))
+}
+
+#Preview("Daily Effort · Circular", as: .accessoryCircular) {
+    DailyEffortWidget()
+} timeline: {
+    MovementEntry(date: ComplicationPreviewData.date, snapshot: .init(
+        generatedAt: ComplicationPreviewData.date, monitoring: true,
+        effortCompletions: ["easy", "easy", "easy", "moderate", "moderate", "challenge"].map {
+            .init(date: ComplicationPreviewData.date, effort: $0)
+        }
+    ))
+    ComplicationPreviewData.monitoring
     MovementEntry(date: ComplicationPreviewData.date, snapshot: .empty(at: ComplicationPreviewData.date))
 }

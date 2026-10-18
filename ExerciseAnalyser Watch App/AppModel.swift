@@ -741,6 +741,8 @@ final class AppModel {
                                            completedToday: state.prompts.filter { $0.completedAt.map { Calendar.current.isDate($0, inSameDayAs: now) } ?? false }.count,
                                            invitationExpiresAt: invitation?.expiresAt, invitationStartsAt: invitation?.plannedFor)
         let weekStart = Calendar.current.date(byAdding: .day, value: -7, to: now) ?? now
+        snapshot.stepHistory = context?.stepHistory
+        snapshot.breakCompletions = state.prompts.compactMap(\.completedAt).filter { $0 > weekStart && $0 <= now }
         snapshot.effortCompletions = state.prompts.compactMap { prompt in
             guard let date = prompt.completedAt, date > weekStart, date <= now,
                   let exercise = prompt.options.first(where: { $0.id == prompt.selectedExerciseID })?.exercise else { return nil }

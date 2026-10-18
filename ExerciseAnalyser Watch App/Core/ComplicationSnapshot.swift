@@ -37,6 +37,35 @@ struct ComplicationSnapshot: Codable, Equatable, Sendable {
     var invitationStartsAt: Date?
     var effortCompletions: [EffortCompletion]?
 
+    var stepHistory: [DailyTotal]?
+    var breakCompletions: [Date]?
+
+    struct DailyTotal: Codable, Equatable, Identifiable, Sendable {
+        let date: Date
+        let value: Double?
+        var id: Date { date }
+    }
+
+    func weeklyStepDays(at now: Date, calendar: Calendar = .current) -> [DailyTotal] {
+        dailyEffortCounts(at: now, calendar: calendar).map { day in
+            let recorded = dataAvailable ? stepHistory?.last {
+                calendar.isDate($0.date, inSameDayAs: day.date) && $0.date <= now
+            } : nil
+            let currentSteps = dataAvailable && checkedAt.map {
+                $0 <= now && calendar.isDate($0, inSameDayAs: day.date)
+            } == true ? steps : nil
+            return DailyTotal(date: day.date, value: recorded?.value ?? currentSteps)
+        }
+    }
+
+    func weeklyBreakDays(at now: Date, calendar: Calendar = .current) -> [DailyTotal] {
+        let dates = breakCompletions ?? effortCompletions?.map(\.date) ?? []
+        return dailyEffortCounts(at: now, calendar: calendar).map { day in
+            let count = dates.filter { $0 <= now && calendar.isDate($0, inSameDayAs: day.date) }.count
+            return DailyTotal(date: day.date, value: dataAvailable ? Double(count) : nil)
+        }
+    }
+
     struct EffortCompletion: Codable, Equatable, Sendable {
         let date: Date
         let effort: String

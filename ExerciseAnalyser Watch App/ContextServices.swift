@@ -134,6 +134,28 @@ final class HealthService {
         }
     }
 
+    private func dailySteps(to now: Date) async throws -> [ComplicationSnapshot.DailyTotal] {
+        let calendar = Calendar.current
+        let today = calendar.startOfDay(for: now)
+        let start = calendar.date(byAdding: .day, value: -6, to: today)!
+        return try await execute { ticket in
+            let query = HKStatisticsCollectionQuery(quantityType: HKQuantityType(.stepCount),
+                quantitySamplePredicate: HKQuery.predicateForSamples(withStart: start, end: now, options: .strictStartDate),
+                options: .cumulativeSum, anchorDate: today, intervalComponents: DateComponents(day: 1))
+            query.initialResultsHandler = { _, collection, error in
+                Task { @MainActor in
+                    if let error { ticket.finish(.failure(error)); return }
+                    var days: [ComplicationSnapshot.DailyTotal] = []
+                    collection?.enumerateStatistics(from: start, to: now) { statistics, _ in
+                        days.append(.init(date: statistics.startDate, value: statistics.sumQuantity()?.doubleValue(for: .count())))
+                    }
+                    ticket.finish(.success(days))
+                }
+            }
+            return query
+        }
+    }
+
     private func latest(_ id: HKQuantityTypeIdentifier, unit: HKUnit, from start: Date, to end: Date) async throws -> Measurement? {
         guard let sample = try await samples(HKQuantityType(id), from: start, to: end, limit: 1, localDeviceOnly: id == .heartRate).first as? HKQuantitySample else { return nil }
         return .init(value: sample.quantity.doubleValue(for: unit), date: sample.endDate)
@@ -151,7 +173,7 @@ final class HealthService {
         var recentStepsNoData = false
         var inferredRecentSteps = false
         // Run independent queries together to stay within the watch's short execution window.
-        async let steps = sum(.stepCount, unit: .count(), from: today, to: now)
+        async let steps = dailySteps(to: now)
         async let recentSteps = sum(.stepCount, unit: .count(), from: now.addingTimeInterval(-15 * 60), to: now)
         async let energy = lightweight ? nil : sum(.activeEnergyBurned, unit: .kilocalorie(), from: today, to: now)
         async let exercise = lightweight ? nil : sum(.appleExerciseTime, unit: .minute(), from: today, to: now)
@@ -167,7 +189,10 @@ final class HealthService {
         let movementStart = min(now.addingTimeInterval(-6 * 3600), recentEvent?.start ?? now)
         async let movement = samples(HKQuantityType(.stepCount), from: movementStart, to: now)
         // Preserve usable signals if another read fails. HealthKit intentionally does not reveal read denial.
-        do { context.stepsToday = try await steps } catch { context.issues.append("Daily steps unavailable") }
+        do {
+            context.stepHistory = try await steps
+            context.stepsToday = context.stepHistory?.last?.value
+        } catch { context.issues.append("Daily steps unavailable") }
         do { context.stepsRecent = try await recentSteps } catch {
             context.issues.append("Recent steps unavailable")
             let failure = error as NSError

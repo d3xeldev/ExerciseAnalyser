@@ -41,6 +41,29 @@ final class WeeklyEffortTests: XCTestCase {
         XCTAssertEqual(ComplicationSnapshot.empty(at: now).dailyEffortCounts(at: now, calendar: calendar).map(\.counts), Array(repeating: [0, 0, 0], count: 7))
     }
 
+    func testWeeklyTotalsKeepMissingStepsAndRollOverAtMidnight() {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "Europe/Lisbon")!
+        let now = calendar.date(from: DateComponents(year: 2026, month: 10, day: 25, hour: 12))!
+        let today = calendar.startOfDay(for: now)
+        let yesterday = calendar.date(byAdding: .day, value: -1, to: today)!
+        var snapshot = ComplicationSnapshot(generatedAt: now, monitoring: true, checkedAt: now, steps: 1200)
+        snapshot.stepHistory = [.init(date: yesterday, value: 4500), .init(date: today, value: 1200)]
+        snapshot.breakCompletions = [yesterday, today, now, now.addingTimeInterval(60)]
+        let days = snapshot.weeklyStepDays(at: now, calendar: calendar)
+        XCTAssertEqual(days.count, 7)
+        XCTAssertNil(days[0].value)
+        XCTAssertEqual(days[5].value, 4500)
+        XCTAssertEqual(days[6].value, 1200)
+        XCTAssertEqual(snapshot.weeklyBreakDays(at: now, calendar: calendar).map(\.value), [0, 0, 0, 0, 0, 1, 2])
+        let tomorrow = calendar.date(byAdding: .day, value: 1, to: today)!
+        XCTAssertNil(snapshot.weeklyStepDays(at: tomorrow, calendar: calendar).last?.value)
+        XCTAssertEqual(snapshot.weeklyBreakDays(at: tomorrow, calendar: calendar).last?.value, 0)
+        snapshot.dataAvailable = false
+        XCTAssertTrue(snapshot.weeklyStepDays(at: now, calendar: calendar).allSatisfy { $0.value == nil })
+        XCTAssertTrue(snapshot.weeklyBreakDays(at: now, calendar: calendar).allSatisfy { $0.value == nil })
+    }
+
     func testOldCacheWithoutEffortDataStillDecodes() throws {
         let now = Date(timeIntervalSince1970: 1_800_000_000)
         let original = ComplicationSnapshot(generatedAt: now, monitoring: true)
