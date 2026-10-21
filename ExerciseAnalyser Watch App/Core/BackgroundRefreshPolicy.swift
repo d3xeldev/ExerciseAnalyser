@@ -19,13 +19,10 @@ enum BackgroundRefreshPolicy {
 
     static func plan(at now: Date, settings: Settings, context: ContextSnapshot?, prompts: [ExercisePrompt], calendar: Calendar = .current) -> RefreshPlan? {
         guard settings.monitoring else { return nil }
-        let hour = calendar.component(.hour, from: now)
-        let active = settings.startHour < settings.endHour
-            ? (settings.startHour..<settings.endHour).contains(hour)
-            : settings.startHour != settings.endHour && (hour >= settings.startHour || hour < settings.endHour)
+        let active = ReminderPlanning.active(at: now, settings: settings, calendar: calendar)
         if !active {
-            guard settings.startHour != settings.endHour,
-                  let next = calendar.nextDate(after: now, matching: DateComponents(hour: settings.startHour, minute: 0), matchingPolicy: .nextTime) else { return nil }
+            guard settings.startMinuteOfDay != settings.endMinuteOfDay,
+                  let next = calendar.nextDate(after: now, matching: DateComponents(hour: settings.startHour, minute: settings.startMinute ?? 0), matchingPolicy: .nextTime) else { return nil }
             return .init(date: next, reason: "active_hours_begin")
         }
 

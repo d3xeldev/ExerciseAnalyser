@@ -8,10 +8,8 @@ enum OpportunityEngine {
         var reasons: [String] = []
         let free = context.busyIntervals == nil ? (context.freeMinutes ?? 15) : ReminderPlanning.freeMinutes(at: now, context: context, settings: settings)
         if !settings.monitoring { reasons.append("Monitoring is paused") }
-        let inHours = settings.startHour < settings.endHour
-            ? (settings.startHour..<settings.endHour).contains(context.localHour)
-            : context.localHour >= settings.startHour || context.localHour < settings.endHour
-        if !inHours || settings.startHour == settings.endHour { reasons.append("Quiet hours") }
+        let inHours = settings.isActive(hour: context.localHour, minute: ReminderPlanning.calendar(for: context).component(.minute, from: now))
+        if !inHours { reasons.append("Quiet hours") }
         if !context.calendarAvailable { reasons.append("Calendar availability is unknown") }
         if context.busy || ReminderPlanning.busyIntervals(context: context).contains(where: { $0.start <= now && now < $0.end }) { reasons.append("A busy calendar event is in progress") }
         if free < 7 { reasons.append("Less than 7 minutes before the next busy event") }
@@ -56,7 +54,7 @@ enum OpportunityEngine {
         if let end = ReminderPlanning.cooldownEnd(settings: settings, history: history, at: now, calendar: calendar), now < end {
             reasons.append("Reminder cooldown is active")
         }
-        if history.contains(where: { $0.status == .selected && $0.completedAt == nil && $0.abandonedAt == nil }) {
+        if history.contains(where: { $0.isActive(at: now) }) {
             reasons.append("An exercise is awaiting feedback")
         }
         if history.contains(where: { [.prepared, .scheduled].contains($0.status) && ($0.plannedFor ?? $0.createdAt) <= now && $0.expiresAt > now }) {
@@ -85,7 +83,7 @@ enum OpportunityEngine {
                 && local.component(.hour, from: $0.notificationDate!) == context.localHour
                 && ($0.selectedExerciseID != nil || $0.status == .dismissed || $0.status == .expired)
         }
-        let accepted = similar.filter { $0.selectedExerciseID != nil }.count
+        let accepted = similar.filter { $0.selectedExerciseID != nil && $0.status != .ignored }.count
         let acceptance = Double(accepted + 2) / Double(similar.count + 4)
         contributions["learned_receptivity"] = (acceptance - 0.5) * 20
         let score = contributions.values.reduce(0, +)

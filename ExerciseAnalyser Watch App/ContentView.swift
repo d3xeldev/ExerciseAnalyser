@@ -1,4 +1,5 @@
 import SwiftUI
+import EventKit
 
 private extension Effort {
     var color: Color {
@@ -11,10 +12,11 @@ private extension Effort {
 }
 
 private enum WatchDestination: Hashable {
-    case preferences, signals, log, more, invitation(UUID), exercise(UUID)
+    case preferences, permissions, signals, log, more, invitation(UUID), exercise(UUID)
 }
 
 struct ContentView: View {
+    @Environment(\.scenePhase) private var scenePhase
     @State private var model = AppModel.shared
     @State private var path: [WatchDestination] = []
 
@@ -24,6 +26,7 @@ struct ContentView: View {
                 .navigationDestination(for: WatchDestination.self) { destination in
                     switch destination {
                     case .preferences: SettingsView(model: model)
+                    case .permissions: PermissionsView(model: model)
                     case .signals: SignalsView(model: model)
                     case .log: StudyView(model: model)
                     case .more: more
@@ -35,12 +38,15 @@ struct ContentView: View {
         .onOpenURL { url in
             guard let kind = ComplicationKind.allCases.first(where: { $0.url == url }) else { return }
             model.complicationOpened(kind)
-            path = []
+            routeCurrentOptions()
+        }
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .active { routeCurrentOptions() }
         }
         .onChange(of: model.navigationRequest) { routeRequestedPrompt() }
         .task {
             if model.requestedPromptID != nil { routeRequestedPrompt() }
-            else if let prompt = model.activePrompt { path = [.exercise(prompt.id)] }
+            else { routeCurrentOptions() }
             while !Task.isCancelled {
                 await model.tickExercise()
                 do { try await Task.sleep(for: .seconds(1)) } catch { return }
@@ -49,6 +55,11 @@ struct ContentView: View {
         .alert("Move Moment", isPresented: Binding(get: { model.message != nil }, set: { if !$0 { model.message = nil } })) {
             Button("OK") { model.message = nil }
         } message: { Text(model.message ?? "") }
+    }
+
+    private func routeCurrentOptions() {
+        if let prompt = model.activePrompt ?? model.currentPrompt { path = [.invitation(prompt.id)] }
+        else { path = [] }
     }
 
     private func routeRequestedPrompt() {
@@ -141,7 +152,7 @@ struct ContentView: View {
             return ("Checking access", "Checking your permissions…", "ellipsis.circle", .secondary)
         }
         if !missingPermissions.isEmpty {
-            return ("Permissions needed", "Enable \(missingPermissions.joined(separator: ", ")) in Preferences.", "exclamationmark.triangle.fill", .yellow)
+            return ("Permissions needed", "Enable \(missingPermissions.joined(separator: ", ")) in Preferences → Permissions.", "exclamationmark.triangle.fill", .yellow)
         }
         if !model.settings.monitoring {
             return ("Monitoring paused", "Enable monitoring in Preferences.", "pause.circle.fill", .secondary)
@@ -195,7 +206,7 @@ struct ContentView: View {
 
     @ViewBuilder
     private func invitation(_ id: UUID) -> some View {
-        if let prompt = model.state.prompts.first(where: { $0.id == id }), prompt.isAvailable(at: Date()) {
+        if let prompt = model.state.prompts.first(where: { $0.id == id }), (prompt.isAvailable(at: Date()) || prompt.isActive(at: Date())) {
             List {
                 Section("Choose a break") {
                     ForEach(prompt.options) { option in
@@ -411,6 +422,26 @@ private struct SignalsView: View {
     }
 }
 
+private struct PermissionsView: View {
+    let model: AppModel
+
+    var body: some View {
+        Form {
+            Section("Connect signals") {
+                Button(model.healthConfigured ? "Health configured" : "Health access") { Task { await model.requestHealth() } }
+                    .disabled(model.healthConfigured)
+                Button(model.calendarAccess ? "Calendar enabled" : "Calendar access") { Task { await model.requestCalendar() } }
+                    .disabled(model.calendarAccess)
+                Button(model.motionAccess ? "Motion enabled" : "Motion access") { Task { await model.requestMotion() } }
+                    .disabled(model.motionAccess)
+                Button(model.notificationAccess ? "Notifications enabled" : "Allow notifications") { Task { await model.requestNotifications() } }
+                    .disabled(model.notificationAccess)
+                if model.refreshingAccess { ProgressView("Checking access…") }
+            }.disabled(model.requestingAccess || model.refreshingAccess)
+        }.navigationTitle("Permissions")
+    }
+}
+
 private struct SettingsView: View {
     let model: AppModel
 
@@ -424,17 +455,10 @@ private struct SettingsView: View {
                 Toggle("Enabled", isOn: setting(\.monitoring)).disabled(!model.dataAvailable)
                 Text("Enabling monitoring will allow your Apple Watch to find the best moments for intervention.").font(.footnote)
             }
-            Section("Connect signals") {
-                Button(model.healthConfigured ? "Health configured" : "Health access") { Task { await model.requestHealth() } }
-                    .disabled(model.healthConfigured)
-                Button(model.calendarAccess ? "Calendar enabled" : "Calendar access") { Task { await model.requestCalendar() } }
-                    .disabled(model.calendarAccess)
-                Button(model.motionAccess ? "Motion enabled" : "Motion access") { Task { await model.requestMotion() } }
-                    .disabled(model.motionAccess)
-                Button(model.notificationAccess ? "Notifications enabled" : "Allow notifications") { Task { await model.requestNotifications() } }
-                    .disabled(model.notificationAccess)
-                if model.refreshingAccess { ProgressView("Checking access…") }
-            }.disabled(model.requestingAccess || model.refreshingAccess)
+            Section {
+                NavigationLink("Permissions", value: WatchDestination.permissions)
+                NavigationLink("Calendars") { CalendarSelectionView(model: model) }
+            }
             Section("Reminder rhythm") {
                 Picker("Inactivity", selection: setting(\.inactivityMinutes)) {
                     ForEach([15, 30, 45, 60, 90], id: \.self) { Text("\($0) min").tag($0) }
@@ -471,11 +495,17 @@ private struct SettingsView: View {
                     .buttonStyle(.borderless)
                 }
                 Text("The first daily reminder gets priority after two active hours, using a 15-minute low-movement threshold. Busy events still block reminders.").font(.footnote)
-                Picker("From", selection: setting(\.startHour)) {
-                    ForEach(0..<24, id: \.self) { Text(String(format: "%02d:00", $0)).tag($0) }
+                AlarmTimeSetting(title: "From", hour: model.settings.startHour, minute: model.settings.startMinute) { hour, minute in
+                    model.updateSettings {
+                        $0.startHour = hour
+                        $0.startMinute = minute
+                    }
                 }
-                Picker("Until", selection: setting(\.endHour)) {
-                    ForEach(0..<24, id: \.self) { Text(String(format: "%02d:00", $0)).tag($0) }
+                AlarmTimeSetting(title: "Until", hour: model.settings.endHour, minute: model.settings.endMinute) { hour, minute in
+                    model.updateSettings {
+                        $0.endHour = hour
+                        $0.endMinute = minute
+                    }
                 }
                 Text("Calendar access is required. Movement reminders wait until busy events finish and there is time for a break.").font(.footnote)
             }
@@ -505,6 +535,224 @@ private struct SettingsView: View {
             }
         }.navigationTitle("Preferences")
             .task { await model.refreshAccessStatus() }
+    }
+}
+
+private struct CalendarSelectionView: View {
+    let model: AppModel
+
+    var body: some View {
+        Form {
+            if model.calendarAccess {
+                Toggle("All calendars", isOn: Binding(get: { model.settings.selectedCalendarIDs == nil }, set: { enabled in
+                    model.updateSettings {
+                        $0.selectedCalendarIDs = enabled ? nil : Set(model.availableCalendars.map(\.calendarIdentifier))
+                    }
+                }))
+                Section("Calendars to check") {
+                    ForEach(model.availableCalendars, id: \.calendarIdentifier) { calendar in
+                        Toggle(isOn: Binding(get: { model.settings.checksCalendar(calendar.calendarIdentifier) }, set: { enabled in
+                            model.updateSettings {
+                                var selected = $0.selectedCalendarIDs ?? Set(model.availableCalendars.map(\.calendarIdentifier))
+                                if enabled { selected.insert(calendar.calendarIdentifier) }
+                                else { selected.remove(calendar.calendarIdentifier) }
+                                $0.selectedCalendarIDs = selected
+                            }
+                        })) {
+                            VStack(alignment: .leading) {
+                                Text(calendar.title)
+                                Text(calendar.source.title).font(.caption).foregroundStyle(.secondary)
+                            }
+                        }
+                        .disabled(model.settings.selectedCalendarIDs == nil)
+                    }
+                    if model.availableCalendars.isEmpty {
+                        Text("No calendars are available on this watch.").font(.footnote)
+                    }
+                }
+                Text("Only busy events in selected calendars block reminders, including background checks. All calendars also includes calendars added later.").font(.footnote)
+                if !model.availableCalendars.contains(where: { model.settings.checksCalendar($0.calendarIdentifier) }) {
+                    Text("No available calendars selected. Calendar events will not block reminders.").font(.footnote)
+                }
+            } else {
+                Button("Enable calendar access") { Task { await model.requestCalendar() } }
+                    .disabled(model.requestingAccess)
+                Text("Allow calendar access to choose which calendars to check.").font(.footnote)
+            }
+        }.navigationTitle("Calendars")
+            .disabled(!model.dataAvailable)
+            .task { await model.refreshAccessStatus() }
+    }
+}
+
+private struct AlarmTimeSetting: View {
+    let title: String
+    let hour: Int
+    let minute: Int?
+    let save: (Int, Int) -> Void
+    @State private var editing = false
+    @State private var pendingTime: (hour: Int, minute: Int)?
+
+    var body: some View {
+        Button {
+            editing = true
+        } label: {
+            HStack {
+                Text(title)
+                Spacer()
+                Text(String(format: "%02d:%02d", hour, minute ?? 0))
+                    .monospacedDigit()
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .accessibilityLabel("\(title), \(String(format: "%02d:%02d", hour, minute ?? 0))")
+        .fullScreenCover(isPresented: $editing, onDismiss: {
+            guard let pendingTime else { return }
+            self.pendingTime = nil
+            if pendingTime.hour != hour || pendingTime.minute != (minute ?? 0) {
+                save(pendingTime.hour, pendingTime.minute)
+            }
+        }) {
+            AlarmTimeEditor(title: title, hour: hour, minute: minute ?? 0) { newHour, newMinute in
+                pendingTime = (newHour, newMinute)
+            }
+        }
+    }
+}
+
+private struct AlarmTimeEditor: View {
+    private enum Field: Hashable { case hour, minute }
+
+    let title: String
+    let save: (Int, Int) -> Void
+    @Environment(\.dismiss) private var dismiss
+    @State private var hour: Double
+    @State private var minute: Double
+    @State private var closing = false
+    @FocusState private var focusedField: Field?
+
+    init(title: String, hour: Int, minute: Int, save: @escaping (Int, Int) -> Void) {
+        self.title = title
+        self.save = save
+        _hour = State(initialValue: Double(hour))
+        _minute = State(initialValue: Double(minute))
+    }
+
+    private var editingMinutes: Bool { focusedField == .minute }
+
+    var body: some View {
+        GeometryReader { geometry in
+            let size = geometry.size.width
+            let radius = size * 0.46 - 14
+            ZStack {
+                Color.black
+                ZStack {
+                    ForEach(0..<60, id: \.self) { tick in
+                        Capsule()
+                            .fill(tick.isMultiple(of: 5) ? Color.white : Color.gray)
+                            .frame(width: tick.isMultiple(of: 5) ? 1.5 : 1, height: tick.isMultiple(of: 5) ? 7 : 4)
+                            .offset(y: -radius)
+                            .rotationEffect(.degrees(Double(tick) * 6))
+                    }
+                    ForEach(0..<12, id: \.self) { index in
+                        let angle = Double(index) * .pi / 6
+                        Text(String(format: "%02d", index * (editingMinutes ? 5 : 2)))
+                            .font(.system(size: size * 0.065))
+                            .monospacedDigit()
+                            .offset(x: sin(angle) * radius * 0.80, y: -cos(angle) * radius * 0.80)
+                    }
+                    Circle()
+                        .fill(.orange)
+                        .frame(width: 8, height: 8)
+                        .offset(y: -radius)
+                        .rotationEffect(.degrees(editingMinutes ? minute * 6 : hour * 15))
+                    VStack(spacing: 6) {
+                        Text(editingMinutes ? "MIN" : "24HR")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        HStack(spacing: 4) {
+                            timeField(value: $hour, field: .hour, maximum: 23, size: size)
+                            Text(":").font(.system(size: size * 0.12))
+                            timeField(value: $minute, field: .minute, maximum: 59, size: size)
+                        }
+                    }
+                }
+                .frame(width: size, height: size)
+                .accessibilityElement(children: .contain)
+                .accessibilityLabel("\(title) time")
+                VStack {
+                    Spacer()
+                    HStack {
+                        Button {
+                            close(saving: false)
+                        } label: {
+                            Image(systemName: "xmark")
+                                .font(.system(size: 20, weight: .semibold))
+                                .frame(width: 40, height: 40)
+                                .glassEffect(.regular.interactive(), in: Circle())
+                        }
+                        .accessibilityLabel("Cancel")
+                        Spacer()
+                        Button {
+                            close(saving: true)
+                        } label: {
+                            Image(systemName: "checkmark")
+                                .font(.system(size: 20, weight: .semibold))
+                                .foregroundStyle(.green)
+                                .frame(width: 40, height: 40)
+                                .glassEffect(.regular.interactive(), in: Circle())
+                        }
+                        .accessibilityLabel("Save time")
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(closing)
+                }
+                .padding(.horizontal, 16)
+                .padding(.bottom, 20)
+            }
+        }
+        .ignoresSafeArea()
+        .toolbar(.hidden, for: .navigationBar)
+        .onAppear { focusedField = .hour }
+        .onDisappear { focusedField = nil }
+    }
+
+    private func close(saving: Bool) {
+        guard !closing else { return }
+        closing = true
+        focusedField = nil
+        if saving { save(Int(hour.rounded()), Int(minute.rounded())) }
+        // Let SwiftUI release the Crown's focused view before removing the editor.
+        Task { @MainActor in
+            await Task.yield()
+            dismiss()
+        }
+    }
+
+    private func timeField(value: Binding<Double>, field: Field, maximum: Double, size: CGFloat) -> some View {
+        Text(String(format: "%02d", Int(value.wrappedValue.rounded())))
+            .font(.system(size: size * 0.14, weight: .medium, design: .rounded))
+            .monospacedDigit()
+            .frame(width: size * 0.24, height: size * 0.26)
+            .overlay {
+                RoundedRectangle(cornerRadius: 10)
+                    .stroke(focusedField == field ? Color.green : Color.gray, lineWidth: focusedField == field ? 2 : 1)
+            }
+            .contentShape(Rectangle())
+            .focusable(!closing)
+            .focused($focusedField, equals: field)
+            .digitalCrownRotation(value, from: 0, through: maximum, by: 1, sensitivity: .low, isContinuous: true, isHapticFeedbackEnabled: true)
+            .onTapGesture { focusedField = field }
+            .accessibilityLabel(field == .hour ? "Hours" : "Minutes")
+            .accessibilityValue(String(Int(value.wrappedValue.rounded())))
+            .accessibilityAdjustableAction { direction in
+                focusedField = field
+                switch direction {
+                case .increment: value.wrappedValue = value.wrappedValue >= maximum ? 0 : value.wrappedValue + 1
+                case .decrement: value.wrappedValue = value.wrappedValue <= 0 ? maximum : value.wrappedValue - 1
+                @unknown default: break
+                }
+            }
     }
 }
 

@@ -58,7 +58,7 @@ struct MovementComplicationView: View {
         switch kind {
         case .moment:
             if !snapshot.dataAvailable { return "figure.walk.circle" }
-            if snapshot.activeExerciseTitle != nil { return "figure.flexibility" }
+            if snapshot.hasActiveExercise(at: entry.date) { return "figure.flexibility" }
             if !snapshot.monitoring { return "pause.fill" }
             return ready ? "figure.walk" : "sparkles"
         case .activity: return "shoeprints.fill"
@@ -86,7 +86,7 @@ struct MovementComplicationView: View {
 
     private var momentLabel: String {
         if !snapshot.dataAvailable { return "SETUP" }
-        if snapshot.activeExerciseTitle != nil { return "BREAK" }
+        if snapshot.hasActiveExercise(at: entry.date) { return "BREAK" }
         return ready ? "MOVE" : (snapshot.monitoring ? "AUTO" : "OFF")
     }
 
@@ -107,7 +107,7 @@ struct MovementComplicationView: View {
 
     @ViewBuilder
     private var circular: some View {
-        if kind == .moment, snapshot.monitoring, fresh, !ready, snapshot.activeExerciseTitle == nil, let minutes = snapshot.lowMovementMinutes {
+        if kind == .moment, snapshot.monitoring, fresh, !ready, !snapshot.hasActiveExercise(at: entry.date), let minutes = snapshot.lowMovementMinutes {
             Gauge(value: min(max(0, minutes), Double(snapshot.inactivityTarget)), in: 0...Double(max(1, snapshot.inactivityTarget))) {
                 Image(systemName: "figure.seated.side").widgetAccentable()
             } currentValueLabel: {
@@ -150,7 +150,7 @@ struct MovementComplicationView: View {
         .widgetLabel {
             switch kind {
             case .moment:
-                Text(snapshot.dataAvailable && snapshot.monitoring && fresh && !ready && snapshot.activeExerciseTitle == nil && snapshot.lowMovementMinutes != nil
+                Text(snapshot.dataAvailable && snapshot.monitoring && fresh && !ready && !snapshot.hasActiveExercise(at: entry.date) && snapshot.lowMovementMinutes != nil
                      ? "\(value) min low movement" : snapshot.title(at: entry.date))
             case .activity: Text("Steps today").foregroundStyle(.blue)
             case .breaks: Text("Breaks today").foregroundStyle(Color("AccentColor"))

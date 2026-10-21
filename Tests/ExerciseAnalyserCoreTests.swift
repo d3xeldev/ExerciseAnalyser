@@ -27,6 +27,104 @@ final class ExerciseAnalyserCoreTests: XCTestCase {
                                                settings: custom ?? settings(), history: history, rng: &rng)!
     }
 
+    func testUnfinishedSelectionStopsBlockingAfterFeedbackWindow() throws {
+        var selected = prompt()
+        selected.status = .selected
+        selected.selectedExerciseID = selected.options[0].id
+        selected.respondedAt = now.addingTimeInterval(-599)
+        XCTAssertFalse(OpportunityEngine.evaluate(context(), settings: settings(), history: [selected]).shouldNotify)
+        selected.respondedAt = now.addingTimeInterval(-600)
+        let restored = try StudyStore.decoder.decode(ExercisePrompt.self, from: StudyStore.encoder.encode(selected))
+        XCTAssertTrue(OpportunityEngine.evaluate(context(), settings: settings(), history: [restored]).shouldNotify)
+        XCTAssertFalse(restored.isActive(at: now))
+        XCTAssertEqual(restored.status, .selected)
+        XCTAssertNil(restored.completedAt)
+        XCTAssertNil(restored.abandonedAt)
+    }
+
+    func testRunningPausedAndEndedBreaksHaveBoundedFeedbackWindows() {
+        var selected = prompt()
+        selected.status = .selected
+        selected.selectedExerciseID = selected.options[0].id
+        selected.respondedAt = now
+        let exercise = selected.options[0].exercise
+        var session = ExerciseSession()
+        session.start(at: now.addingTimeInterval(60))
+        selected.exerciseSession = session
+        let deadline = session.deadline(for: exercise)!
+        XCTAssertEqual(selected.activeUntil, deadline.addingTimeInterval(600))
+        XCTAssertTrue(selected.isActive(at: deadline))
+        XCTAssertFalse(selected.isActive(at: deadline.addingTimeInterval(600)))
+        session.pause(at: now.addingTimeInterval(70))
+        selected.exerciseSession = session
+        XCTAssertEqual(selected.activeUntil, now.addingTimeInterval(670))
+        session.endedAt = now.addingTimeInterval(90)
+        selected.exerciseSession = session
+        XCTAssertEqual(selected.activeUntil, now.addingTimeInterval(690))
+        selected.completedAt = now.addingTimeInterval(100)
+        XCTAssertFalse(selected.isActive(at: now.addingTimeInterval(100)))
+    }
+
+    func testComplicationReleasesUnfinishedBreakWithoutAnotherCheck() {
+        var snapshot = ComplicationSnapshot(generatedAt: now, monitoring: true, checkedAt: now)
+        snapshot.activeExerciseTitle = "Mobility flow"
+        snapshot.activeExerciseExpiresAt = now.addingTimeInterval(60)
+        XCTAssertEqual(snapshot.title(at: now), "Your movement break")
+        XCTAssertEqual(snapshot.detail(at: now), "Mobility flow")
+        XCTAssertTrue(snapshot.transitionDates(after: now).contains(now.addingTimeInterval(60)))
+        XCTAssertEqual(snapshot.title(at: now.addingTimeInterval(60)), "Watching for a moment")
+        XCTAssertNotEqual(snapshot.detail(at: now.addingTimeInterval(60)), "Mobility flow")
+        snapshot.activeExerciseExpiresAt = nil
+        XCTAssertNotEqual(snapshot.detail(at: now.addingTimeInterval(600)), "Mobility flow")
+    }
+
+    func testIgnoredBreakIsPersistedOnceAndCountsAsMiss() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appendingPathComponent("study.json")
+        let store = try StudyStore(url: url)
+        var selected = prompt()
+        selected.status = .selected
+        selected.selectedExerciseID = selected.options[0].id
+        selected.respondedAt = now
+        selected.scheduledAt = now
+        var older = prompt(seed: 2)
+        older.status = .expired
+        older.scheduledAt = now.addingTimeInterval(-60)
+        try store.transaction { $0.prompts = [older, selected] }
+        try store.expire(at: now.addingTimeInterval(599))
+        XCTAssertEqual(store.state.prompts[1].status, .selected)
+        try store.expire(at: now.addingTimeInterval(600))
+        try store.expire(at: now.addingTimeInterval(601))
+        let reloaded = try StudyStore(url: url)
+        let ignored = reloaded.state.prompts[1]
+        XCTAssertEqual(ignored.status, .ignored)
+        XCTAssertEqual(ignored.selectedExerciseID, selected.selectedExerciseID)
+        XCTAssertNil(ignored.completedAt)
+        XCTAssertNil(ignored.abandonedAt)
+        XCTAssertEqual(reloaded.state.events.filter { $0.kind == "ignored_break" }.count, 1)
+        XCTAssertEqual(ReminderPlanning.cooldownEnd(settings: settings(), history: reloaded.state.prompts,
+                                                   at: now.addingTimeInterval(601), calendar: ReminderPlanning.calendar(for: context())),
+                       now.addingTimeInterval(Double(settings().cooldownMinutes) * 60 * 1.5))
+    }
+
+    func testReselectionKeepsOriginalOptionsAndRejectsExpiredBreak() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = try StudyStore(url: directory.appendingPathComponent("study.json"))
+        var selected = prompt()
+        selected.status = .selected
+        selected.selectedExerciseID = selected.options[0].id
+        selected.respondedAt = now
+        selected.exerciseSession = ExerciseSession(startedAt: now, runningSince: now)
+        try store.transaction { $0.prompts = [selected] }
+        try store.reselect(promptID: selected.id, exerciseID: selected.options[1].id, at: now.addingTimeInterval(30))
+        XCTAssertEqual(store.state.prompts[0].options.map(\.id), selected.options.map(\.id))
+        XCTAssertEqual(store.state.prompts[0].selectedExerciseID, selected.options[1].id)
+        XCTAssertNil(store.state.prompts[0].exerciseSession)
+        XCTAssertThrowsError(try store.reselect(promptID: selected.id, exerciseID: selected.options[2].id, at: now.addingTimeInterval(630)))
+    }
+
     func testAvailableSedentaryMomentQualifies() {
         let decision = OpportunityEngine.evaluate(context(), settings: settings(), history: [])
         XCTAssertTrue(decision.shouldNotify)

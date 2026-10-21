@@ -24,6 +24,25 @@ final class HealthService {
     let store = HKHealthStore()
     private var observers: [HKObserverQuery] = []
     private var deliveryTask: Task<Void, Never>?
+    private static let cacheKey = "backgroundHealthCache.v1"
+    private var cache = UserDefaults.standard.data(forKey: cacheKey)
+        .flatMap { try? JSONDecoder().decode(BackgroundHealthCache.self, from: $0) } ?? BackgroundHealthCache()
+    private var cacheRevision = 0
+
+    private func saveCache() {
+        if let data = try? JSONEncoder().encode(cache) { UserDefaults.standard.set(data, forKey: Self.cacheKey) }
+    }
+
+    private func invalidateCache(for identifier: String? = nil) {
+        if let identifier, ![HKQuantityTypeIdentifier.stepCount.rawValue,
+            HKQuantityTypeIdentifier.restingHeartRate.rawValue, HKCategoryTypeIdentifier.sleepAnalysis.rawValue].contains(identifier) { return }
+        cacheRevision += 1
+        if identifier == nil || identifier == HKQuantityTypeIdentifier.stepCount.rawValue { cache.stepHistory = nil }
+        if identifier == nil || identifier == HKQuantityTypeIdentifier.restingHeartRate.rawValue { cache.restingHeartRate = nil }
+        if identifier == nil || identifier == HKCategoryTypeIdentifier.sleepAnalysis.rawValue { cache.sleepHours = nil }
+        saveCache()
+    }
+
     private let identifiers: [HKQuantityTypeIdentifier] = [
         .stepCount, .activeEnergyBurned, .appleExerciseTime, .appleStandTime,
         .distanceWalkingRunning, .heartRate, .restingHeartRate, .heartRateVariabilitySDNN
@@ -43,6 +62,7 @@ final class HealthService {
         guard HKHealthStore.isHealthDataAvailable() else {
             throw NSError(domain: "Health", code: 1, userInfo: [NSLocalizedDescriptionKey: "Health data is unavailable on this device."])
         }
+        invalidateCache()
         try await store.requestAuthorization(toShare: [], read: readTypes)
     }
 
@@ -54,6 +74,7 @@ final class HealthService {
             let query = HKObserverQuery(sampleType: type, predicate: nil) { _, completion, error in
                 Task { @MainActor in
                     defer { completion() }
+                    self.invalidateCache(for: type.identifier)
                     if let error { onError("Health update: \(error.localizedDescription)"); return }
                     await onChange(type.identifier)
                 }
@@ -170,28 +191,39 @@ final class HealthService {
         let now = context.date
         let today = Calendar.current.startOfDay(for: now)
         let week = now.addingTimeInterval(-7 * 86400)
+        let cached = lightweight ? cache.available(at: now) : BackgroundHealthCache()
+        let revision = cacheRevision
+        let readStepHistory = cached.stepHistory == nil
+        let readRestingHeartRate = cached.restingHeartRate == nil
+        let readSleep = cached.sleepHours == nil
         var recentStepsNoData = false
         var inferredRecentSteps = false
         // Run independent queries together to stay within the watch's short execution window.
-        async let steps = dailySteps(to: now)
+        async let steps = readStepHistory ? dailySteps(to: now) : []
+        async let currentSteps = readStepHistory ? nil : sum(.stepCount, unit: .count(), from: today, to: now)
         async let recentSteps = sum(.stepCount, unit: .count(), from: now.addingTimeInterval(-15 * 60), to: now)
         async let energy = lightweight ? nil : sum(.activeEnergyBurned, unit: .kilocalorie(), from: today, to: now)
         async let exercise = lightweight ? nil : sum(.appleExerciseTime, unit: .minute(), from: today, to: now)
         async let stand = lightweight ? nil : sum(.appleStandTime, unit: .minute(), from: today, to: now)
         async let distance = lightweight ? nil : sum(.distanceWalkingRunning, unit: .meter(), from: today, to: now)
         async let hr = latest(.heartRate, unit: HKUnit.count().unitDivided(by: .minute()), from: now.addingTimeInterval(-3600), to: now)
-        async let resting = latest(.restingHeartRate, unit: HKUnit.count().unitDivided(by: .minute()), from: week, to: now)
+        async let resting = readRestingHeartRate ? latest(.restingHeartRate, unit: HKUnit.count().unitDivided(by: .minute()), from: week, to: now) : nil
         async let hrv = lightweight ? nil : latest(.heartRateVariabilitySDNN, unit: .secondUnit(with: .milli), from: now.addingTimeInterval(-86400), to: now)
         async let hrvSamples = lightweight ? [] : samples(HKQuantityType(.heartRateVariabilitySDNN), from: week, to: now.addingTimeInterval(-86400))
-        async let sleep = samples(HKCategoryType(.sleepAnalysis), from: now.addingTimeInterval(-24 * 3600), to: now)
+        async let sleep = readSleep ? samples(HKCategoryType(.sleepAnalysis), from: now.addingTimeInterval(-24 * 3600), to: now) : []
         async let workouts = samples(HKObjectType.workoutType(), from: now.addingTimeInterval(-86400), to: now, limit: 1)
         let recentEvent = ReminderPlanning.recentBusyEvent(context: context)
         let movementStart = min(now.addingTimeInterval(-6 * 3600), recentEvent?.start ?? now)
         async let movement = samples(HKQuantityType(.stepCount), from: movementStart, to: now)
         // Preserve usable signals if another read fails. HealthKit intentionally does not reveal read denial.
         do {
-            context.stepHistory = try await steps
-            context.stepsToday = context.stepHistory?.last?.value
+            if let history = cached.stepHistory {
+                context.stepsToday = try await currentSteps
+                context.stepHistory = history.value.filter { $0.date < today } + [.init(date: today, value: context.stepsToday)]
+            } else {
+                context.stepHistory = try await steps
+                context.stepsToday = context.stepHistory?.last?.value
+            }
         } catch { context.issues.append("Daily steps unavailable") }
         do { context.stepsRecent = try await recentSteps } catch {
             context.issues.append("Recent steps unavailable")
@@ -204,7 +236,10 @@ final class HealthService {
         do { context.standMinutes = try await stand } catch { context.issues.append("Stand minutes unavailable") }
         do { context.distanceMeters = try await distance } catch { context.issues.append("Distance unavailable") }
         do { context.heartRate = try await hr } catch { context.issues.append("Heart rate unavailable") }
-        do { context.restingHeartRate = try await resting } catch { context.issues.append("Resting heart rate unavailable") }
+        do {
+            let reading = try await resting
+            context.restingHeartRate = cached.restingHeartRate?.value ?? reading
+        } catch { context.issues.append("Resting heart rate unavailable") }
         do { context.heartRateVariability = try await hrv } catch { context.issues.append("HRV unavailable") }
         do {
             let values = try await hrvSamples.compactMap { ($0 as? HKQuantitySample)?.quantity.doubleValue(for: .secondUnit(with: .milli)) }.sorted()
@@ -224,7 +259,8 @@ final class HealthService {
                     merged[merged.count - 1] = DateInterval(start: last.start, end: max(last.end, interval.end))
                 } else { merged.append(interval) }
             }
-            if !merged.isEmpty { context.sleepHours = merged.reduce(0) { $0 + $1.duration } / 3600 }
+            if let sleep = cached.sleepHours { context.sleepHours = sleep.value }
+            else if !merged.isEmpty { context.sleepHours = merged.reduce(0) { $0 + $1.duration } / 3600 }
         } catch { context.issues.append("Sleep unavailable") }
         do { context.lastWorkoutEnd = try await workouts.first?.endDate } catch { context.issues.append("Workout history unavailable") }
         do {
@@ -271,6 +307,31 @@ final class HealthService {
         provenance("sleepHours", value: context.sleepHours, unit: "h", start: now.addingTimeInterval(-86400), error: "Sleep unavailable")
         provenance("lastWorkoutEnd", value: context.lastWorkoutEnd?.timeIntervalSince1970, unit: "unix_seconds", start: now.addingTimeInterval(-86400), sampleDate: context.lastWorkoutEnd, error: "Workout history unavailable")
         provenance("lastMovement", value: context.lastMovement?.timeIntervalSince1970, unit: "unix_seconds", start: movementStart, sampleDate: context.lastMovement, error: "Movement history unavailable")
+        context.signalProvenance["stepHistory"] = cached.stepHistory?.cachedProvenance
+            ?? .init(source: "HealthKit", unit: "count", windowStart: Calendar.current.date(byAdding: .day, value: -6, to: today)!,
+                     windowEnd: now, sampleDate: nil, availability: context.issues.contains("Daily steps unavailable") ? "query_failed" : "available")
+        if let resting = cached.restingHeartRate { context.signalProvenance["restingHeartRate"] = resting.cachedProvenance }
+        if let sleep = cached.sleepHours { context.signalProvenance["sleepHours"] = sleep.cachedProvenance }
+        // Never extend a cache hit's lifetime or repopulate a cache invalidated during these queries.
+        if !Task.isCancelled, revision == cacheRevision {
+            cache = cache.available(at: now)
+            if cached.stepHistory == nil {
+                cache.stepHistory = context.stepHistory.map {
+                    .init(value: $0, collectedAt: now, timeZoneIdentifier: context.timeZoneIdentifier, provenance: context.signalProvenance["stepHistory"]!)
+                }
+            }
+            if cached.restingHeartRate == nil {
+                cache.restingHeartRate = context.restingHeartRate.map {
+                    .init(value: $0, collectedAt: now, timeZoneIdentifier: context.timeZoneIdentifier, provenance: context.signalProvenance["restingHeartRate"]!)
+                }
+            }
+            if cached.sleepHours == nil {
+                cache.sleepHours = context.sleepHours.map {
+                    .init(value: $0, collectedAt: now, timeZoneIdentifier: context.timeZoneIdentifier, provenance: context.signalProvenance["sleepHours"]!)
+                }
+            }
+            saveCache()
+        }
         if lightweight {
             for key in ["activeEnergy", "exerciseMinutes", "standMinutes", "distanceMeters", "heartRateVariability", "hrvBaseline"] {
                 context.signalProvenance[key] = .init(source: "background_policy", unit: "not_collected", windowStart: now, windowEnd: now,
@@ -287,15 +348,30 @@ final class CalendarService {
 
     func requestAccess() async throws -> Bool { try await store.requestFullAccessToEvents() }
 
-    func populate(_ initial: ContextSnapshot) -> ContextSnapshot {
+    var availableCalendars: [EKCalendar] {
+        guard EKEventStore.authorizationStatus(for: .event) == .fullAccess else { return [] }
+        return store.calendars(for: .event).sorted {
+            if $0.title != $1.title { return $0.title.localizedStandardCompare($1.title) == .orderedAscending }
+            return $0.source.title.localizedStandardCompare($1.source.title) == .orderedAscending
+        }
+    }
+
+    func populate(_ initial: ContextSnapshot, settings: Settings) -> ContextSnapshot {
         var context = initial
+        context.calendarAvailable = false
+        context.busy = false
+        context.busyUntil = nil
+        context.busyIntervals = nil
+        context.freeMinutes = nil
         guard EKEventStore.authorizationStatus(for: .event) == .fullAccess else {
             context.issues.append("Calendar access has not been granted")
             return context
         }
         let now = context.date
         let end = now.addingTimeInterval(24 * 3600)
-        let events = store.events(matching: store.predicateForEvents(withStart: now.addingTimeInterval(-86400), end: end, calendars: nil))
+        let calendars = availableCalendars.filter { settings.checksCalendar($0.calendarIdentifier) }
+        // An empty EventKit calendar filter can mean all calendars, so skip the query explicitly.
+        let events = calendars.isEmpty ? [] : store.events(matching: store.predicateForEvents(withStart: now.addingTimeInterval(-86400), end: end, calendars: calendars))
         // Only events explicitly marked Busy suppress reminders.
         // Keep recently ended intervals so the two-minute post-event plan can still be revalidated.
         let blocking = events.filter { $0.status != .canceled && $0.availability == .busy }
@@ -306,7 +382,7 @@ final class CalendarService {
         context.busyUntil = current.map(\.endDate).max()
         let next = blocking.filter { $0.startDate > now }.map(\.startDate).min()
         context.freeMinutes = context.busy ? 0 : (next ?? end).timeIntervalSince(now) / 60
-        // Never retain event titles, notes, attendees, locations, or calendar identifiers.
+        // Context retains only intervals; calendar identifiers live in selection preferences.
         return context
     }
 }
@@ -384,7 +460,7 @@ final class ContextService {
     let calendar = CalendarService()
     let motion = MotionService()
 
-    func read(lightweight: Bool = false) async -> ContextSnapshot {
+    func read(settings: Settings, lightweight: Bool = false) async -> ContextSnapshot {
         let now = Date()
         var initial = ContextSnapshot(date: now, localHour: Calendar.current.component(.hour, from: now))
         let device = WKInterfaceDevice.current()
@@ -392,7 +468,7 @@ final class ContextService {
         initial.batteryLevel = device.batteryLevel >= 0 ? Double(device.batteryLevel) : nil
         initial.charging = device.batteryState == .charging || device.batteryState == .full
         initial.lowPower = ProcessInfo.processInfo.isLowPowerModeEnabled
-        let base = calendar.populate(initial)
+        let base = calendar.populate(initial, settings: settings)
         async let healthContext = health.populate(base, lightweight: lightweight)
         async let motionContext = motion.populate(base)
         var context = await healthContext
@@ -402,7 +478,7 @@ final class ContextService {
         context.motionObservedAt = motionResult.motionObservedAt
         context.issues += motionResult.issues
         guard !Task.isCancelled else { return context }
-        context = calendar.populate(context)
+        context = calendar.populate(context, settings: settings)
         context.signalProvenance["motion"] = .init(source: "CoreMotion", unit: "category", windowStart: now.addingTimeInterval(-3 * 3600), windowEnd: now,
                                                   sampleDate: context.motionObservedAt, availability: context.motionObservedAt == nil ? "unavailable_or_unknown" : "available")
         context.signalProvenance["calendar"] = .init(source: "EventKit", unit: "busy_intervals", windowStart: now.addingTimeInterval(-86400), windowEnd: now.addingTimeInterval(86400),

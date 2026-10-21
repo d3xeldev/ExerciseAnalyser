@@ -40,9 +40,29 @@ struct Settings: Codable, Equatable, Sendable {
     var explorationRate = 0.3
     var inactivityMinutes = 30
     var cooldownMinutes = 60
-    var dailyLimit = 3
+    var dailyLimit = 6
     var startHour = 9
     var endHour = 21
+    // Missing minutes in existing saved preferences retain whole-hour times.
+    var startMinute: Int?
+    var endMinute: Int?
+    var startMinuteOfDay: Int { startHour * 60 + (startMinute ?? 0) }
+    var endMinuteOfDay: Int { endHour * 60 + (endMinute ?? 0) }
+
+    func isActive(hour: Int, minute: Int) -> Bool {
+        let time = hour * 60 + minute
+        return startMinuteOfDay < endMinuteOfDay
+            ? (startMinuteOfDay..<endMinuteOfDay).contains(time)
+            : startMinuteOfDay != endMinuteOfDay && (time >= startMinuteOfDay || time < endMinuteOfDay)
+    }
+
+    // nil checks all calendars, including newly added ones; an empty set checks none.
+    var selectedCalendarIDs: Set<String>?
+
+    func checksCalendar(_ identifier: String) -> Bool {
+        selectedCalendarIDs?.contains(identifier) ?? true
+    }
+
     var requireCalendar = true
     var excludedExerciseIDs: Set<String> = []
 }
@@ -159,7 +179,7 @@ struct ExerciseOption: Codable, Identifiable, Sendable {
 }
 
 enum PromptStatus: String, Codable, Sendable {
-    case prepared, scheduled, selected, dismissed, expired, cancelled, failed
+    case prepared, scheduled, selected, dismissed, expired, ignored, cancelled, failed
 }
 
 struct ExercisePrompt: Identifiable, Codable, Sendable {

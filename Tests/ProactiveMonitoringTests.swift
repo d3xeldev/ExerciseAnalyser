@@ -62,6 +62,47 @@ final class ProactiveMonitoringTests: XCTestCase {
         XCTAssertNil(BackgroundRefreshPolicy.plan(at: late, settings: overnight, context: nil, prompts: [], calendar: calendar))
     }
 
+    func testMinutePrecisionForActiveHoursAndRefresh() throws {
+        var preferences = settings
+        preferences.startHour = 14
+        preferences.startMinute = 30
+        preferences.endHour = 14
+        preferences.endMinute = 45
+        XCTAssertFalse(preferences.isActive(hour: 14, minute: 29))
+        XCTAssertTrue(preferences.isActive(hour: 14, minute: 30))
+        XCTAssertTrue(preferences.isActive(hour: 14, minute: 44))
+        XCTAssertFalse(preferences.isActive(hour: 14, minute: 45))
+        let plan = try XCTUnwrap(BackgroundRefreshPolicy.plan(at: now, settings: preferences, context: nil, prompts: [], calendar: calendar))
+        XCTAssertEqual(plan.date, now.addingTimeInterval(30 * 60))
+        var context = ContextSnapshot(date: now.addingTimeInterval(40 * 60), timeZoneIdentifier: "UTC", localHour: 14)
+        context.calendarAvailable = true
+        context.busyIntervals = []
+        XCTAssertEqual(ReminderPlanning.freeMinutes(at: context.date, context: context, settings: preferences), 5)
+        XCTAssertFalse(OpportunityEngine.evaluate(context, settings: preferences, history: []).reasons.contains("Quiet hours"))
+        context.date = now.addingTimeInterval(45 * 60)
+        XCTAssertTrue(OpportunityEngine.evaluate(context, settings: preferences, history: []).reasons.contains("Quiet hours"))
+        preferences.startHour = 22
+        preferences.endHour = 6
+        XCTAssertTrue(preferences.isActive(hour: 23, minute: 0))
+        XCTAssertTrue(preferences.isActive(hour: 6, minute: 44))
+        XCTAssertFalse(preferences.isActive(hour: 6, minute: 45))
+        XCTAssertFalse(preferences.isActive(hour: 22, minute: 29))
+    }
+
+    func testTimePreferencesRoundTripAndLegacyDefaults() throws {
+        var preferences = settings
+        preferences.startMinute = 25
+        preferences.endMinute = 50
+        let encoded = try JSONEncoder().encode(preferences)
+        XCTAssertEqual(try JSONDecoder().decode(Settings.self, from: encoded), preferences)
+        var legacy = try XCTUnwrap(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+        legacy.removeValue(forKey: "startMinute")
+        legacy.removeValue(forKey: "endMinute")
+        let restored = try JSONDecoder().decode(Settings.self, from: JSONSerialization.data(withJSONObject: legacy))
+        XCTAssertEqual(restored.startMinuteOfDay, preferences.startHour * 60)
+        XCTAssertEqual(restored.endMinuteOfDay, preferences.endHour * 60)
+    }
+
     func testRecentOutstandingWakeIsNotPushedLaterAndSurvivesSerialization() throws {
         let pending = RefreshRequest(requestedAt: now, preferredDate: now.addingTimeInterval(120), reason: "busy_event_ends")
         let restored = try JSONDecoder().decode(RefreshRequest.self, from: JSONEncoder().encode(pending))

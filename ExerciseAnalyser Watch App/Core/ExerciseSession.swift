@@ -107,3 +107,26 @@ extension Exercise {
         }
     }
 }
+
+// Reserve ten minutes for an unfinished break before treating it as ignored.
+extension ExercisePrompt {
+    var activeUntil: Date {
+        let exercise = options.first { $0.id == selectedExerciseID }?.exercise
+        let session = exerciseSession
+        let lastActivity = session?.endedAt
+            ?? exercise.flatMap { session?.deadline(for: $0) }
+            ?? session?.intervals.last?.end
+            ?? session?.startedAt
+            ?? respondedAt
+            ?? createdAt
+        return lastActivity.addingTimeInterval(10 * 60)
+    }
+
+    func shouldIgnore(at now: Date) -> Bool {
+        status == .selected && completedAt == nil && abandonedAt == nil && now >= activeUntil
+    }
+
+    func isActive(at now: Date) -> Bool {
+        status == .selected && completedAt == nil && abandonedAt == nil && now < activeUntil
+    }
+}

@@ -18,6 +18,7 @@ final class AppModel {
     private(set) var decision: OpportunityDecision?
     private(set) var notificationAccess = false
     private(set) var calendarAccess = EKEventStore.authorizationStatus(for: .event) == .fullAccess
+    private(set) var availableCalendars: [EKCalendar] = []
     private(set) var motionAccess = CMMotionActivityManager.authorizationStatus() == .authorized
     private(set) var healthConfigured = false
     private(set) var refreshingAccess = false
@@ -49,7 +50,7 @@ final class AppModel {
         state.prompts.last { $0.isAvailable(at: Date()) }
     }
     var activePrompt: ExercisePrompt? {
-        state.prompts.last { $0.status == .selected && $0.completedAt == nil && $0.abandonedAt == nil }
+        state.prompts.last { $0.isActive(at: Date()) }
     }
     var nextRefreshDate: Date? { _ = revision; return pendingRefresh?.preferredDate }
 
@@ -126,6 +127,7 @@ final class AppModel {
     func updateSettings(_ change: (inout Settings) -> Void) {
         var updated = settings
         change(&updated)
+        let calendarSelectionChanged = updated.selectedCalendarIDs != settings.selectedCalendarIDs
         do {
             try mutate { state in
                 state.settings = updated
@@ -138,6 +140,7 @@ final class AppModel {
                 }
             }
             notifications.remove(state.prompts.filter { $0.status == .cancelled }.map(\.id))
+            if calendarSelectionChanged { context = nil; decision = nil }
             if updated.monitoring {
                 scheduleRefresh()
                 startObservers()
@@ -178,8 +181,9 @@ final class AppModel {
         do {
             let allowed = try await services.calendar.requestAccess()
             calendarAccess = EKEventStore.authorizationStatus(for: .event) == .fullAccess
+            availableCalendars = services.calendar.availableCalendars
             record(.init(date: Date(), kind: "permission_result", source: "calendar", detail: allowed ? "full_access" : "not_granted"))
-            message = calendarAccess ? "Calendar enabled. Only busy/free times are retained." : "Calendar permission was not granted."
+            message = calendarAccess ? "Calendar enabled. Choose calendars in Preferences." : "Calendar permission was not granted."
             await evaluate(source: "calendar_permission_changed")
         } catch {
             record(.init(date: Date(), kind: "permission_error", source: "calendar", detail: error.localizedDescription))
@@ -223,6 +227,7 @@ final class AppModel {
     }
 
     func refreshAccessStatus() async {
+        availableCalendars = services.calendar.availableCalendars
         calendarAccess = EKEventStore.authorizationStatus(for: .event) == .fullAccess
         motionAccess = CMMotionActivityManager.authorizationStatus() == .authorized
         guard !refreshingAccess else { return }
@@ -365,7 +370,7 @@ final class AppModel {
             revision += 1
             notifications.remove(state.prompts.filter { $0.status == .expired }.map(\.id))
             let evaluationSettings = settings
-            var snapshot = await services.read(lightweight: lightweight)
+            var snapshot = await services.read(settings: evaluationSettings, lightweight: lightweight)
             guard !Task.isCancelled else {
                 record(.init(date: Date(), kind: "check_cancelled", source: source, detail: "Background execution expired", attributes: ["checkID": checkID]))
                 return
@@ -381,7 +386,7 @@ final class AppModel {
                 return
             }
             // Re-read calendar after asynchronous health queries before any notification is submitted.
-            snapshot = services.calendar.populate(snapshot)
+            snapshot = services.calendar.populate(snapshot, settings: evaluationSettings)
             context = snapshot
             try cancelPlannedReminders(reason: "Future reminders require fresh calendar and movement checks") { _ in true }
             let result = OpportunityEngine.evaluate(snapshot, settings: settings, history: state.prompts)
@@ -473,6 +478,7 @@ final class AppModel {
     }
 
     private func calendarChanged() async {
+        availableCalendars = services.calendar.availableCalendars
         do {
             try cancelPlannedReminders(reason: "Calendar changed before the planned reminder") { _ in true }
         } catch { message = "Could not save calendar-plan changes: \(error.localizedDescription)" }
@@ -515,13 +521,23 @@ final class AppModel {
     func choose(promptID: UUID, exerciseID: String?, source: String = "app", at date: Date = Date()) {
         defer { publishComplications(); scheduleRefresh() }
         guard let store else { return }
-        if let activePrompt, let exerciseID {
-            if activePrompt.id == promptID && activePrompt.selectedExerciseID == exerciseID {
+        if let activePrompt {
+            guard activePrompt.id == promptID else {
+                message = "Finish your current break before choosing another."
+                return
+            }
+            guard let exerciseID else { finish(activePrompt, completed: false); return }
+            do {
+                if activePrompt.selectedExerciseID != exerciseID {
+                    try store.reselect(promptID: promptID, exerciseID: exerciseID, at: date)
+                    _ = exerciseEvidence.stop()
+                    notifications.removeExerciseEnd(promptID)
+                    revision += 1
+                    exportURLs = []
+                }
                 requestedPromptID = promptID
                 navigationRequest = UUID()
-            } else {
-                message = "Finish your current break before choosing another."
-            }
+            } catch { message = error.localizedDescription }
             return
         }
         do {
@@ -749,6 +765,7 @@ final class AppModel {
             return .init(date: date, effort: exercise.effort.rawValue)
         }
         if let activePrompt {
+            snapshot.activeExerciseExpiresAt = activePrompt.activeUntil
             snapshot.activeExerciseTitle = activePrompt.options.first { $0.id == activePrompt.selectedExerciseID }?.exercise.title
         }
         do {

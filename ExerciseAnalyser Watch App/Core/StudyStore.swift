@@ -156,9 +156,30 @@ final class StudyStore {
         return true
     }
 
-    func expire(at now: Date) throws {
-        guard state.prompts.contains(where: { [.scheduled, .prepared].contains($0.status) && $0.expiresAt <= now }) else { return }
+    func reselect(promptID: UUID, exerciseID: String, at now: Date) throws {
+        guard let index = state.prompts.firstIndex(where: { $0.id == promptID }),
+              state.prompts[index].isActive(at: now),
+              state.prompts[index].options.contains(where: { $0.id == exerciseID }) else { throw StudyStoreError.invalidResponse }
         try transaction { state in
+            let previous = state.prompts[index].selectedExerciseID
+            state.prompts[index].selectedExerciseID = exerciseID
+            state.prompts[index].exerciseSession = nil
+            state.prompts[index].respondedAt = now
+            // An explicit new selection starts a new window; simply reopening does not.
+            state.events.append(.init(date: now, kind: "exercise_reselected", promptID: promptID, exerciseID: exerciseID,
+                                      source: "app", attributes: ["previousExerciseID": previous ?? ""]))
+        }
+    }
+
+    func expire(at now: Date) throws {
+        guard state.prompts.contains(where: { ([.scheduled, .prepared].contains($0.status) && $0.expiresAt <= now) || $0.shouldIgnore(at: now) }) else { return }
+        try transaction { state in
+            for index in state.prompts.indices where state.prompts[index].shouldIgnore(at: now) {
+                state.prompts[index].status = .ignored
+                state.events.append(.init(date: now, kind: "ignored_break", promptID: state.prompts[index].id,
+                                          source: "reconciliation", detail: "Ten-minute feedback window elapsed without completion or abandonment.",
+                                          attributes: ["ignoredAt": String(state.prompts[index].activeUntil.timeIntervalSince1970)]))
+            }
             for index in state.prompts.indices where [.scheduled, .prepared].contains(state.prompts[index].status) && state.prompts[index].expiresAt <= now {
                 state.prompts[index].status = .expired
                 state.events.append(.init(date: now, kind: "expired_no_response", promptID: state.prompts[index].id, source: "reconciliation",

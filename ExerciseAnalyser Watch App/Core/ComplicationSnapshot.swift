@@ -34,6 +34,7 @@ struct ComplicationSnapshot: Codable, Equatable, Sendable {
     var completedToday = 0
     var invitationExpiresAt: Date?
     var activeExerciseTitle: String?
+    var activeExerciseExpiresAt: Date?
     var invitationStartsAt: Date?
     var effortCompletions: [EffortCompletion]?
 
@@ -122,9 +123,13 @@ struct ComplicationSnapshot: Codable, Equatable, Sendable {
         monitoring && dataAvailable && now >= generatedAt && now >= (invitationStartsAt ?? generatedAt) && (invitationExpiresAt.map { $0 > now } ?? false)
     }
 
+    func hasActiveExercise(at now: Date) -> Bool {
+        activeExerciseTitle != nil && now < (activeExerciseExpiresAt ?? generatedAt.addingTimeInterval(10 * 60))
+    }
+
     func title(at now: Date) -> String {
         guard dataAvailable else { return "Open to set up" }
-        if activeExerciseTitle != nil { return "Your movement break" }
+        if hasActiveExercise(at: now) { return "Your movement break" }
         guard monitoring else { return "Paused" }
         if invitationAvailable(at: now) { return "Choose a break" }
         if let invitationStartsAt, invitationStartsAt > now { return "Break planned" }
@@ -132,7 +137,7 @@ struct ComplicationSnapshot: Codable, Equatable, Sendable {
     }
 
     func detail(at now: Date) -> String {
-        if let activeExerciseTitle { return activeExerciseTitle }
+        if let activeExerciseTitle, hasActiveExercise(at: now) { return activeExerciseTitle }
         if invitationAvailable(at: now) { return "Low · Moderate · High" }
         if !monitoring { return dataAvailable ? "Monitoring is off" : statusDetail }
         if let invitationStartsAt, invitationStartsAt > now {
@@ -143,6 +148,7 @@ struct ComplicationSnapshot: Codable, Equatable, Sendable {
 
     func transitionDates(after now: Date, calendar: Calendar = .current) -> [Date] {
         var dates: [Date] = []
+        if activeExerciseTitle != nil { dates.append(activeExerciseExpiresAt ?? generatedAt.addingTimeInterval(10 * 60)) }
         if let checkedAt { dates.append(checkedAt.addingTimeInterval(Self.freshness)) }
         if let invitationExpiresAt { dates.append(invitationExpiresAt) }
         if let invitationStartsAt { dates.append(invitationStartsAt) }

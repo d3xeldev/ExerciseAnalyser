@@ -47,7 +47,7 @@ final class NotificationService: NSObject, UNUserNotificationCenterDelegate {
         }
         // This final synchronous check also covers an event starting while health queries were running.
         let now = Date()
-        let context = CalendarService().populate(.init(date: now, localHour: Calendar.current.component(.hour, from: now)))
+        let context = CalendarService().populate(.init(date: now, localHour: Calendar.current.component(.hour, from: now)), settings: prompt.settings)
         guard context.calendarAvailable, !context.busy,
               ReminderPlanning.freeMinutes(at: now, context: context, settings: prompt.settings) >= Double((prompt.options.map { $0.exercise.minutes }.max() ?? 5) + 2) else {
             throw NSError(domain: "Notifications", code: 2, userInfo: [NSLocalizedDescriptionKey: "Calendar no longer has a free movement window."])

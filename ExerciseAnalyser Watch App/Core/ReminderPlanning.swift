@@ -43,7 +43,7 @@ enum ReminderPlanning {
         let sent = dueHistory(history, at: now).sorted { $0.notificationDate! > $1.notificationDate! }
         guard let last = sent.first?.notificationDate else { return nil }
         let today = sent.prefix { calendar.isDate($0.notificationDate!, inSameDayAs: now) }
-        let misses = today.prefix { $0.status == .dismissed || $0.status == .expired || ($0.status == .scheduled && $0.expiresAt <= now) }.count
+        let misses = today.prefix { $0.status == .dismissed || $0.status == .ignored || $0.shouldIgnore(at: now) || $0.status == .expired || ($0.status == .scheduled && $0.expiresAt <= now) }.count
         let base = Double(max(0, settings.cooldownMinutes)) * 60
         let baseEnd = last.addingTimeInterval(base)
         guard misses >= 2, base > 0 else { return baseEnd }
@@ -57,21 +57,21 @@ enum ReminderPlanning {
         let today = calendar.startOfDay(for: context.date)
         let weekday = calendar.component(.weekday, from: context.date)
         let resolved = dueHistory(history, at: context.date).filter {
-            $0.notificationDate! < today && ($0.selectedExerciseID != nil || $0.status == .dismissed || $0.status == .expired)
+            $0.notificationDate! < today && (($0.selectedExerciseID != nil && $0.status != .ignored) || $0.status == .dismissed || $0.status == .ignored || $0.status == .expired)
         }
         // Use the local time at delivery, not the time an earlier plan was created.
         func localCalendar(_ prompt: ExercisePrompt) -> Calendar { Self.calendar(for: prompt.context) }
         let sameWeekday = resolved.filter { localCalendar($0).component(.weekday, from: $0.notificationDate!) == weekday }
         let groups = Dictionary(grouping: sameWeekday) { localCalendar($0).component(.hour, from: $0.notificationDate!) }
         let reliable = groups.filter { _, prompts in
-            let accepted = prompts.filter { $0.selectedExerciseID != nil }
+            let accepted = prompts.filter { ($0.selectedExerciseID != nil && $0.status != .ignored) }
             let days = Set(accepted.map { localCalendar($0).startOfDay(for: $0.notificationDate!) })
             return days.count >= 2 && accepted.count * 2 > prompts.count
         }
         let hour = reliable.keys.sorted { lhs, rhs in
             let left = reliable[lhs]!, right = reliable[rhs]!
-            let leftRate = Double(left.filter { $0.selectedExerciseID != nil }.count + 1) / Double(left.count + 2)
-            let rightRate = Double(right.filter { $0.selectedExerciseID != nil }.count + 1) / Double(right.count + 2)
+            let leftRate = Double(left.filter { ($0.selectedExerciseID != nil && $0.status != .ignored) }.count + 1) / Double(left.count + 2)
+            let rightRate = Double(right.filter { ($0.selectedExerciseID != nil && $0.status != .ignored) }.count + 1) / Double(right.count + 2)
             return leftRate == rightRate ? lhs < rhs : leftRate > rightRate
         }.first
         var components: DateComponents
@@ -82,7 +82,7 @@ enum ReminderPlanning {
         } else {
             // Fall back only without any resolved history for this weekday.
             guard sameWeekday.isEmpty, let yesterday = calendar.date(byAdding: .day, value: -1, to: today),
-                  let accepted = resolved.filter({ $0.selectedExerciseID != nil && $0.notificationDate! >= yesterday })
+                  let accepted = resolved.filter({ ($0.selectedExerciseID != nil && $0.status != .ignored) && $0.notificationDate! >= yesterday })
                     .max(by: { $0.notificationDate! < $1.notificationDate! }) else { return nil }
             components = localCalendar(accepted).dateComponents([.hour, .minute], from: accepted.notificationDate!)
             reason = "previous_day_accepted_time"
@@ -112,14 +112,12 @@ enum ReminderPlanning {
     }
 
     static func inactivityTarget(settings: Settings, context: ContextSnapshot, history: [ExercisePrompt]) -> Int {
-        let hoursIntoWindow = (context.localHour - settings.startHour + 24) % 24
-        return !hasReminderToday(history, context: context) && hoursIntoWindow >= 2 ? min(15, settings.inactivityMinutes) : settings.inactivityMinutes
+        let minutesIntoWindow = (context.localHour * 60 + calendar(for: context).component(.minute, from: context.date) - settings.startMinuteOfDay + 1440) % 1440
+        return !hasReminderToday(history, context: context) && minutesIntoWindow >= 120 ? min(15, settings.inactivityMinutes) : settings.inactivityMinutes
     }
 
     static func active(at date: Date, settings: Settings, calendar: Calendar) -> Bool {
-        let hour = calendar.component(.hour, from: date)
-        return settings.startHour < settings.endHour ? (settings.startHour..<settings.endHour).contains(hour)
-            : settings.startHour != settings.endHour && (hour >= settings.startHour || hour < settings.endHour)
+        settings.isActive(hour: calendar.component(.hour, from: date), minute: calendar.component(.minute, from: date))
     }
 
     static func freeMinutes(at date: Date, context: ContextSnapshot, settings: Settings) -> Double {
@@ -127,7 +125,7 @@ enum ReminderPlanning {
         let calendar = calendar(for: context)
         guard active(at: date, settings: settings, calendar: calendar),
               !intervals.contains(where: { $0.start <= date && date < $0.end }) else { return 0 }
-        let quietStart = calendar.nextDate(after: date, matching: DateComponents(hour: settings.endHour, minute: 0), matchingPolicy: .nextTime) ?? date
+        let quietStart = calendar.nextDate(after: date, matching: DateComponents(hour: settings.endHour, minute: settings.endMinute ?? 0), matchingPolicy: .nextTime) ?? date
         let midnight = calendar.dateInterval(of: .day, for: date)!.end
         let nextBusy = intervals.filter { $0.start > date }.map(\.start).min() ?? quietStart
         return max(0, min(quietStart, midnight, nextBusy).timeIntervalSince(date) / 60)
