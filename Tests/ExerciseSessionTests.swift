@@ -12,6 +12,58 @@ final class ExerciseSessionTests: XCTestCase {
         XCTAssertNil(session.startedAt)
     }
 
+    func testOpenedInvitationExpiresAsIgnoredOnlyOnce() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = try StudyStore(url: directory.appendingPathComponent("study.json"))
+        var prompt = ExerciseAnalyserCoreTests().prompt()
+        prompt.status = .scheduled
+        prompt.openedAt = prompt.createdAt.addingTimeInterval(60)
+        try store.transaction { $0.prompts.append(prompt) }
+        try store.expire(at: prompt.expiresAt.addingTimeInterval(-1))
+        XCTAssertEqual(store.state.prompts[0].status, .scheduled)
+        try store.expire(at: prompt.expiresAt)
+        try store.expire(at: prompt.expiresAt.addingTimeInterval(1))
+        XCTAssertEqual(store.state.prompts[0].status, .ignored)
+        XCTAssertEqual(store.state.events.filter { $0.kind == "ignored_break" }.count, 1)
+    }
+
+    func testLeavingAutomaticSelectionIgnoresAndStopsSession() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = try StudyStore(url: directory.appendingPathComponent("study.json"))
+        var prompt = ExerciseAnalyserCoreTests().prompt()
+        prompt.status = .selected
+        prompt.selectedExerciseID = prompt.options[0].id
+        prompt.exerciseSession = ExerciseSession()
+        let startedAt = prompt.createdAt
+        prompt.exerciseSession?.start(at: startedAt)
+        try store.transaction { $0.prompts.append(prompt) }
+        try store.leaveInvitation(promptID: prompt.id, at: prompt.createdAt.addingTimeInterval(10))
+        try store.leaveInvitation(promptID: prompt.id, at: prompt.createdAt.addingTimeInterval(11))
+        XCTAssertEqual(store.state.prompts[0].status, .ignored)
+        XCTAssertNil(store.state.prompts[0].exerciseSession?.runningSince)
+        XCTAssertEqual(store.state.events.filter { $0.kind == "ignored_break" }.count, 1)
+    }
+
+    func testLeavingOrExpiringManualInvitationDoesNotLogIgnoring() throws {
+        for expires in [false, true] {
+            let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+            defer { try? FileManager.default.removeItem(at: directory) }
+            let store = try StudyStore(url: directory.appendingPathComponent("study.json"))
+            var prompt = ExerciseAnalyserCoreTests().prompt()
+            prompt.status = .scheduled
+            prompt.deliveryReason = "manual_intervention"
+            prompt.openedAt = prompt.createdAt
+            try store.transaction { $0.prompts.append(prompt) }
+            if expires { try store.expire(at: prompt.expiresAt) }
+            else { try store.leaveInvitation(promptID: prompt.id, at: prompt.createdAt) }
+            XCTAssertEqual(store.state.prompts[0].status, .cancelled)
+            XCTAssertTrue(store.state.events.isEmpty)
+            XCTAssertFalse(store.state.prompts[0].isAvailable(at: prompt.createdAt))
+        }
+    }
+
     func testPauseResumeExcludesPausedTimeAndStartIsIdempotent() {
         var session = ExerciseSession()
         session.start(at: now)

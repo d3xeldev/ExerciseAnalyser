@@ -1,6 +1,6 @@
 import Foundation
 
-enum Effort: String, Codable, CaseIterable, Sendable {
+nonisolated enum Effort: String, Codable, CaseIterable, Sendable {
     case easy, moderate, challenge
 
     var title: String {
@@ -12,7 +12,7 @@ enum Effort: String, Codable, CaseIterable, Sendable {
     }
 }
 
-struct Exercise: Identifiable, Codable, Equatable, Sendable {
+nonisolated struct Exercise: Identifiable, Codable, Equatable, Sendable {
     let id: String
     let title: String
     let effort: Effort
@@ -33,7 +33,7 @@ struct Exercise: Identifiable, Codable, Equatable, Sendable {
     ]
 }
 
-struct Settings: Codable, Equatable, Sendable {
+nonisolated struct Settings: Codable, Equatable, Sendable {
     static let unlimitedDailyLimit = -1
 
     var monitoring = false
@@ -67,7 +67,7 @@ struct Settings: Codable, Equatable, Sendable {
     var excludedExerciseIDs: Set<String> = []
 }
 
-struct Measurement: Codable, Equatable, Sendable {
+nonisolated struct Measurement: Codable, Equatable, Sendable {
     let value: Double
     let date: Date
 
@@ -76,16 +76,16 @@ struct Measurement: Codable, Equatable, Sendable {
     }
 }
 
-enum MotionKind: String, Codable, Sendable {
+nonisolated enum MotionKind: String, Codable, Sendable {
     case stationary, walking, running, cycling, automotive, unknown
 }
 
-struct BusyEventActivity: Codable, Sendable {
+nonisolated struct BusyEventActivity: Codable, Sendable {
     let interval: DateInterval
     let steps: Double
 }
 
-struct ContextSnapshot: Codable, Sendable {
+nonisolated struct ContextSnapshot: Codable, Sendable {
     var date: Date
     var timeZoneIdentifier: String = TimeZone.current.identifier
     var localHour: Int
@@ -137,7 +137,7 @@ struct ContextSnapshot: Codable, Sendable {
     }
 }
 
-struct SignalProvenance: Codable, Sendable {
+nonisolated struct SignalProvenance: Codable, Sendable {
     let source: String
     let unit: String
     let windowStart: Date
@@ -146,7 +146,7 @@ struct SignalProvenance: Codable, Sendable {
     let availability: String
 }
 
-struct OpportunityDecision: Codable, Sendable {
+nonisolated struct OpportunityDecision: Codable, Sendable {
     let shouldNotify: Bool
     let score: Double
     let reasons: [String]
@@ -155,7 +155,7 @@ struct OpportunityDecision: Codable, Sendable {
     var scoreContributions: [String: Double] = [:]
 }
 
-enum SelectionMethod: String, Codable, Sendable {
+nonisolated enum SelectionMethod: String, Codable, Sendable {
     case learned, randomExploration, coldStartRandom
 
     var title: String {
@@ -167,7 +167,7 @@ enum SelectionMethod: String, Codable, Sendable {
     }
 }
 
-struct ExerciseOption: Codable, Identifiable, Sendable {
+nonisolated struct ExerciseOption: Codable, Identifiable, Sendable {
     var id: String { exercise.id }
     let exercise: Exercise
     let method: SelectionMethod
@@ -178,14 +178,14 @@ struct ExerciseOption: Codable, Identifiable, Sendable {
     var selectionCounts: [String: Int] = [:]
 }
 
-enum PromptStatus: String, Codable, Sendable {
+nonisolated enum PromptStatus: String, Codable, Sendable {
     case prepared, scheduled, selected, dismissed, expired, ignored, cancelled, failed
 }
 
-struct ExercisePrompt: Identifiable, Codable, Sendable {
+nonisolated struct ExercisePrompt: Identifiable, Codable, Sendable {
     let id: UUID
     let createdAt: Date
-    let expiresAt: Date
+    var expiresAt: Date
     let context: ContextSnapshot
     let decision: OpportunityDecision
     let settings: Settings
@@ -205,6 +205,10 @@ struct ExercisePrompt: Identifiable, Codable, Sendable {
     var plannedFor: Date?
     var deliveryReason: String?
     var cancelledAt: Date?
+    var openedAt: Date?
+    var snoozedUntil: Date?
+
+    var isManual: Bool { deliveryReason == "manual_intervention" }
 
     // scheduledAt is request acceptance, not delivery. Cancelled future requests are not exposures.
     var notificationDate: Date? {
@@ -213,8 +217,19 @@ struct ExercisePrompt: Identifiable, Codable, Sendable {
         return plannedFor ?? scheduledAt
     }
 
+    mutating func snooze(minutes: Int, at now: Date) throws {
+        guard [5, 10].contains(minutes), [.scheduled, .prepared].contains(status),
+              expiresAt > now, (snoozedUntil ?? plannedFor ?? createdAt) <= now else {
+            throw StudyStoreError.invalidResponse
+        }
+        let responseWindow = expiresAt.timeIntervalSince(snoozedUntil ?? plannedFor ?? createdAt)
+        snoozedUntil = now.addingTimeInterval(Double(minutes) * 60)
+        expiresAt = snoozedUntil!.addingTimeInterval(responseWindow)
+        status = .scheduled
+    }
+
     func isAvailable(at now: Date) -> Bool {
-        status == .scheduled && (plannedFor ?? createdAt) <= now && expiresAt > now
+        status == .scheduled && (snoozedUntil ?? plannedFor ?? createdAt) <= now && expiresAt > now
     }
 
     var slateAssignmentProbability: Double {
@@ -222,7 +237,7 @@ struct ExercisePrompt: Identifiable, Codable, Sendable {
     }
 }
 
-struct StudyEvent: Identifiable, Codable, Sendable {
+nonisolated struct StudyEvent: Identifiable, Codable, Sendable {
     var id = UUID()
     var date: Date
     var kind: String
@@ -238,9 +253,10 @@ struct StudyEvent: Identifiable, Codable, Sendable {
     var attributes: [String: String] = [:]
     var sequence: Int?
     var participantID: UUID?
+    var exerciseSession: ExerciseSession?
 }
 
-struct StudyState: Codable, Sendable {
+nonisolated struct StudyState: Codable, Sendable {
     var schemaVersion = 1
     var participantID = UUID()
     var settings = Settings()

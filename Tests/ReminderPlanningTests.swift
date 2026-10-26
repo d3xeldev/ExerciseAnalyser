@@ -32,6 +32,60 @@ final class ReminderPlanningTests: XCTestCase {
         return prompt
     }
 
+    func testUserDelayPreservesExercisesAndFullResponseWindow() throws {
+        for minutes in [5, 10] {
+            var prompt = plannedPrompt(context, plan: .init(date: now, freeMinutes: 60, reason: "test"))
+            let options = prompt.options.map(\.id)
+            let window = prompt.expiresAt.timeIntervalSince(now)
+            let tappedAt = now.addingTimeInterval(90)
+            try prompt.snooze(minutes: minutes, at: tappedAt)
+            let due = tappedAt.addingTimeInterval(Double(minutes) * 60)
+            XCTAssertEqual(prompt.snoozedUntil, due)
+            XCTAssertEqual(prompt.expiresAt, due.addingTimeInterval(window))
+            XCTAssertEqual(prompt.options.map(\.id), options)
+            XCTAssertFalse(prompt.isAvailable(at: due.addingTimeInterval(-1)))
+            XCTAssertTrue(prompt.isAvailable(at: due))
+            var waitingContext = context
+            waitingContext.date = tappedAt
+            XCTAssertTrue(OpportunityEngine.evaluate(waitingContext, settings: settings, history: [prompt])
+                .reasons.contains("A movement invitation has been delayed"))
+            let restored = try JSONDecoder().decode(ExercisePrompt.self, from: JSONEncoder().encode(prompt))
+            XCTAssertEqual(restored.snoozedUntil, due)
+            XCTAssertFalse(restored.isAvailable(at: tappedAt))
+            try prompt.snooze(minutes: minutes, at: due)
+            XCTAssertEqual(prompt.snoozedUntil, due.addingTimeInterval(Double(minutes) * 60))
+            XCTAssertEqual(prompt.expiresAt.timeIntervalSince(prompt.snoozedUntil!), window)
+        }
+    }
+
+    func testUserDelayRejectsEarlyDuplicateExpiredAndInvalidActions() throws {
+        var prompt = plannedPrompt(context, plan: .init(date: now, freeMinutes: 60, reason: "test"))
+        XCTAssertThrowsError(try prompt.snooze(minutes: 1, at: now))
+        XCTAssertThrowsError(try prompt.snooze(minutes: 5, at: prompt.expiresAt))
+        try prompt.snooze(minutes: 5, at: now)
+        XCTAssertThrowsError(try prompt.snooze(minutes: 10, at: now.addingTimeInterval(1)))
+        prompt.status = .selected
+        XCTAssertThrowsError(try prompt.snooze(minutes: 5, at: now.addingTimeInterval(300)))
+    }
+
+    func testDelayedPromptSurvivesOriginalExpiryAndRejectsEarlySelection() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appendingPathComponent("study.json")
+        let store = try StudyStore(url: url)
+        var prompt = plannedPrompt(context, plan: .init(date: now, freeMinutes: 60, reason: "test"))
+        let originalExpiry = prompt.expiresAt
+        try prompt.snooze(minutes: 10, at: now.addingTimeInterval(60))
+        try store.transaction { $0.prompts.append(prompt) }
+        let restored = try StudyStore(url: url)
+        try restored.expire(at: originalExpiry)
+        XCTAssertEqual(restored.state.prompts[0].status, .scheduled)
+        XCTAssertThrowsError(try restored.respond(promptID: prompt.id, exerciseID: prompt.options[0].id,
+                                                  source: "notification", at: prompt.snoozedUntil!.addingTimeInterval(-1)))
+        XCTAssertTrue(try restored.respond(promptID: prompt.id, exerciseID: prompt.options[0].id,
+                                          source: "notification", at: prompt.snoozedUntil!))
+    }
+
     func testEmptyStepWindowRequiresReadableOlderHistoryAndNoRecentOverlap() {
         let old = DateInterval(start: now.addingTimeInterval(-3600), end: now.addingTimeInterval(-1800))
         XCTAssertTrue(StepEvidence.inferredEmptyRecentWindow(noData: true, sampleIntervals: [old], at: now))

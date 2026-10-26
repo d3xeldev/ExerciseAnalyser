@@ -1,6 +1,6 @@
 import Foundation
 
-struct ExerciseSession: Codable, Sendable {
+nonisolated struct ExerciseSession: Codable, Sendable {
     var startedAt: Date?
     var runningSince: Date?
     var intervals: [DateInterval] = []
@@ -42,14 +42,14 @@ struct ExerciseSession: Codable, Sendable {
     }
 }
 
-struct ExerciseEvidence: Codable, Sendable {
+nonisolated struct ExerciseEvidence: Codable, Sendable {
     var steps: Double?
     var distanceMeters: Double?
     var wristMovementSeconds: Double = 0
     var wristObservedSeconds: Double = 0
 }
 
-struct ExerciseAssessment: Codable, Sendable {
+nonisolated struct ExerciseAssessment: Codable, Sendable {
     enum Outcome: String, Codable, Sendable {
         case movementDetected, littleMovement, inconclusive
     }

@@ -26,6 +26,7 @@ final class AppModel {
     var exportURLs: [URL] = []
     private(set) var navigationRequest = UUID()
     private(set) var requestedPromptID: UUID?
+    private(set) var requestedEffortSelection = false
     private(set) var assessingExercise = false
     @ObservationIgnored private let exerciseEvidence = ExerciseEvidenceService()
     @ObservationIgnored private var store: StudyStore?
@@ -464,7 +465,7 @@ final class AppModel {
 
     private func cancelPlannedReminders(reason: String, where shouldCancel: (ExercisePrompt) -> Bool) throws {
         let ids = state.prompts.filter {
-            [.prepared, .scheduled].contains($0.status) && ($0.plannedFor.map { $0 > Date() } ?? false) && shouldCancel($0)
+            [.prepared, .scheduled].contains($0.status) && $0.snoozedUntil == nil && ($0.plannedFor.map { $0 > Date() } ?? false) && shouldCancel($0)
         }.map(\.id)
         guard !ids.isEmpty else { return }
         notifications.remove(ids)
@@ -486,11 +487,10 @@ final class AppModel {
         await evaluate(source: "calendar_changed")
     }
 
-    func triggerManualIntervention() {
-        if let prompt = activePrompt ?? currentPrompt {
-            requestedPromptID = prompt.id
-            navigationRequest = UUID()
-            return
+    func triggerManualIntervention() async -> UUID? {
+        requestedEffortSelection = false
+        if let prompt = activePrompt {
+            return prompt.id
         }
         let now = Date()
         let snapshot = context.flatMap { $0.isTimelyForDecision(at: now) ? $0 : nil }
@@ -504,21 +504,26 @@ final class AppModel {
                                                             history: state.prompts, randomizationSeed: String(seed),
                                                             deliveryReason: "manual_intervention", rng: &rng) else {
             message = "Enable at least one exercise at each effort level."
-            return
+            return nil
         }
         // Make the invitation available in-app without scheduling a notification.
         prompt.status = .scheduled
         do {
-            try mutate { state in
-                state.prompts.append(prompt)
-                state.events.append(.init(date: now, kind: "manual_intervention", promptID: prompt.id, source: "app"))
-            }
-            requestedPromptID = prompt.id
-            navigationRequest = UUID()
-        } catch { message = error.localizedDescription }
+            guard let store else { return nil }
+            try await store.appendManualPrompt(prompt)
+            revision += 1
+            exportURLs = []
+            return prompt.id
+        } catch is CancellationError {
+            return nil
+        } catch {
+            message = error.localizedDescription
+            return nil
+        }
     }
 
     func choose(promptID: UUID, exerciseID: String?, source: String = "app", at date: Date = Date()) {
+        requestedEffortSelection = false
         defer { publishComplications(); scheduleRefresh() }
         guard let store else { return }
         if let activePrompt {
@@ -556,16 +561,56 @@ final class AppModel {
         }
     }
 
+    private func snoozePrompt(id: UUID, minutes: Int, at date: Date) async {
+        guard let original = state.prompts.first(where: { $0.id == id }) else { return }
+        do {
+            var delayed = original
+            try delayed.snooze(minutes: minutes, at: date)
+            try mutate { state in
+                guard let index = state.prompts.firstIndex(where: { $0.id == id }) else { return }
+                state.prompts[index] = delayed
+            }
+            do {
+                try await notifications.schedule(delayed)
+            } catch {
+                try mutate { state in
+                    guard let index = state.prompts.firstIndex(where: { $0.id == id }),
+                          state.prompts[index].status == .scheduled else { return }
+                    state.prompts[index] = original
+                }
+                throw error
+            }
+            guard state.prompts.first(where: { $0.id == id })?.status == .scheduled else {
+                notifications.remove([id])
+                return
+            }
+            record(.init(date: date, kind: "notification_snoozed", promptID: id, source: "notification",
+                         attributes: ["minutes": String(minutes), "dueAt": delayed.snoozedUntil!.ISO8601Format()]))
+            requestedPromptID = nil
+            publishComplications()
+            scheduleRefresh()
+        } catch {
+            message = "Could not delay reminder: \(error.localizedDescription)"
+            record(.init(date: date, kind: "notification_snooze_failed", promptID: id, source: "notification", detail: error.localizedDescription))
+        }
+    }
+
     private func handleResponse(id: UUID, action: String, at date: Date) async {
+        if action == "movement.snooze.5" || action == "movement.snooze.10" {
+            await snoozePrompt(id: id, minutes: action == "movement.snooze.5" ? 5 : 10, at: date)
+            return
+        }
         if action == "exercise_timer" {
+            requestedEffortSelection = false
             requestedPromptID = id
             navigationRequest = UUID()
             await tickExercise()
-        } else if action == UNNotificationDefaultActionIdentifier {
-            requestedPromptID = id
-            navigationRequest = UUID()
+        } else if action == UNNotificationDefaultActionIdentifier || action == "movement.choose" {
             do {
                 try mutate { state in
+                    if let index = state.prompts.firstIndex(where: { $0.id == id }) {
+                        state.prompts[index].openedAt = state.prompts[index].openedAt ?? date
+                    }
                     if let index = state.prompts.firstIndex(where: { $0.id == id && $0.status == .prepared }) {
                         state.prompts[index].status = .scheduled
                         state.prompts[index].scheduledAt = state.prompts[index].createdAt
@@ -576,6 +621,9 @@ final class AppModel {
             } catch { message = error.localizedDescription }
             record(.init(date: date, kind: "opened", promptID: id, source: "notification"))
             await reconcile()
+            requestedEffortSelection = true
+            requestedPromptID = id
+            navigationRequest = UUID()
         } else {
             choose(promptID: id, exerciseID: action == UNNotificationDismissActionIdentifier ? nil : action, source: "notification", at: date)
         }
@@ -606,6 +654,43 @@ final class AppModel {
         }
     }
 
+    func expireInvitations() {
+        guard let store else { return }
+        let now = Date()
+        guard state.prompts.contains(where: {
+            ([.scheduled, .prepared].contains($0.status) && $0.expiresAt <= now) || $0.shouldIgnore(at: now)
+        }) else { return }
+        do {
+            try store.expire(at: now)
+            revision += 1
+            exportURLs = []
+            let expired = state.prompts.filter { [.ignored, .expired, .cancelled].contains($0.status) }.map(\.id)
+            notifications.remove(expired)
+            for id in expired { notifications.removeExerciseEnd(id) }
+            publishComplications()
+        } catch { message = error.localizedDescription }
+    }
+
+    func leaveInvitation(_ id: UUID) -> Bool {
+        guard let store else { return false }
+        do {
+            let leavingActiveExercise = activePrompt?.id == id
+            try store.leaveInvitation(promptID: id, at: Date())
+            if leavingActiveExercise { _ = exerciseEvidence.stop() }
+            notifications.remove([id])
+            notifications.removeExerciseEnd(id)
+            requestedPromptID = nil
+            revision += 1
+            exportURLs = []
+            publishComplications()
+            scheduleRefresh()
+            return true
+        } catch {
+            message = error.localizedDescription
+            return false
+        }
+    }
+
     func pauseExercise(_ promptID: UUID) async {
         await tickExercise()
         guard let prompt = activePrompt, prompt.id == promptID, var session = prompt.exerciseSession,
@@ -621,12 +706,10 @@ final class AppModel {
 
     private func saveSession(_ session: ExerciseSession, promptID: UUID, kind: String) -> Bool {
         do {
-            try mutate { state in
-                guard let index = state.prompts.firstIndex(where: { $0.id == promptID }) else { throw StudyStoreError.invalidResponse }
-                state.prompts[index].exerciseSession = session
-                state.events.append(.init(date: Date(), kind: kind, promptID: promptID,
-                    exerciseID: state.prompts[index].selectedExerciseID, source: "timer"))
-            }
+            guard let store else { throw StudyStoreError.unsupportedSchema }
+            try store.saveSession(session, promptID: promptID, kind: kind)
+            revision += 1
+            exportURLs = []
             return true
         } catch { message = error.localizedDescription; return false }
     }

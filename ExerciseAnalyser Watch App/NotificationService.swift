@@ -22,11 +22,12 @@ final class NotificationService: NSObject, UNUserNotificationCenterDelegate {
 
     func registerCategories(for prompts: [ExercisePrompt]) {
         let categories = prompts.suffix(64).map { prompt in
-            let actions = prompt.options.map { option in
-                UNNotificationAction(identifier: option.id,
-                                     title: "\(option.exercise.effort.title): \(option.exercise.title) · \(option.exercise.minutes)m",
-                                     options: [.foreground])
-            }
+            // Keep within the system action limit while retaining every exercise in the app.
+            let actions = [
+                UNNotificationAction(identifier: "movement.choose", title: "Choose exercise", options: [.foreground]),
+                UNNotificationAction(identifier: "movement.snooze.5", title: "In 5 minutes", options: []),
+                UNNotificationAction(identifier: "movement.snooze.10", title: "In 10 minutes", options: [])
+            ]
             return UNNotificationCategory(identifier: "movement.\(prompt.id.uuidString)", actions: actions,
                                           intentIdentifiers: [], options: [.customDismissAction])
         }
@@ -42,6 +43,13 @@ final class NotificationService: NSObject, UNUserNotificationCenterDelegate {
         content.categoryIdentifier = "movement.\(prompt.id.uuidString)"
         content.threadIdentifier = "movement"
         content.userInfo = ["promptID": prompt.id.uuidString]
+        if let date = prompt.snoozedUntil {
+            // Explicit user delays use an OS timer, independent of best-effort background refresh.
+            try await center.add(UNNotificationRequest(identifier: prompt.id.uuidString, content: content,
+                trigger: UNTimeIntervalNotificationTrigger(timeInterval: max(1, date.timeIntervalSinceNow), repeats: false)))
+            center.removeDeliveredNotifications(withIdentifiers: [prompt.id.uuidString])
+            return
+        }
         guard prompt.plannedFor == nil else {
             throw NSError(domain: "Notifications", code: 1, userInfo: [NSLocalizedDescriptionKey: "Future reminders require a fresh opportunity check."])
         }

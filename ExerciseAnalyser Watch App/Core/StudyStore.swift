@@ -20,6 +20,7 @@ final class StudyStore {
     private(set) var state: StudyState
     let url: URL
     var sessionID: UUID?
+    private var mutationVersion = 0
     private var journalURL: URL { url.appendingPathExtension("events.jsonl") }
 
     init(url: URL) throws {
@@ -41,7 +42,14 @@ final class StudyStore {
                     guard sequence == state.events.count + 1 else {
                         throw StudyStoreError.unsupportedSchema
                     }
+                    if let session = event.exerciseSession {
+                        guard let index = state.prompts.firstIndex(where: { $0.id == event.promptID }) else {
+                            throw StudyStoreError.unsupportedSchema
+                        }
+                        state.prompts[index].exerciseSession = session
+                    }
                     state.events.append(event)
+        mutationVersion += 1
                 }
                 validLength += line.count + 1
             }
@@ -54,6 +62,8 @@ final class StudyStore {
     }
 
     func appendEvent(_ original: StudyEvent) throws {
+        let promptIndex = state.prompts.firstIndex(where: { $0.id == original.promptID })
+        if original.exerciseSession != nil, promptIndex == nil { throw StudyStoreError.invalidResponse }
         // Establish the installation identity before the first journal entry.
         if !FileManager.default.fileExists(atPath: url.path) { try transaction { _ in } }
         var event = original
@@ -76,9 +86,21 @@ final class StudyStore {
         do { try handle.write(contentsOf: data) }
         catch { try? handle.truncate(atOffset: offset); throw error }
         state.events.append(event)
+        mutationVersion += 1
+        if let session = event.exerciseSession, let promptIndex {
+            state.prompts[promptIndex].exerciseSession = session
+        }
     }
 
-    static var encoder: JSONEncoder {
+    func saveSession(_ session: ExerciseSession, promptID: UUID, kind: String, at date: Date = Date()) throws {
+        guard let prompt = state.prompts.first(where: { $0.id == promptID }) else { throw StudyStoreError.invalidResponse }
+        // Timer transitions append one durable record instead of encoding the entire study history.
+        // Replay restores the session and event together; failed writes publish neither.
+        try appendEvent(.init(date: date, kind: kind, promptID: promptID,
+                              exerciseID: prompt.selectedExerciseID, source: "timer", exerciseSession: session))
+    }
+
+    nonisolated static var encoder: JSONEncoder {
         let encoder = JSONEncoder()
         let format = Date.ISO8601FormatStyle(includingFractionalSeconds: true)
         encoder.dateEncodingStrategy = .custom { date, encoder in
@@ -122,9 +144,60 @@ final class StudyStore {
         try data.write(to: url, options: .atomic)
         #endif
         state = next
+        mutationVersion += 1
         // The snapshot is committed first. Replay skips its sequence numbers if cleanup is interrupted.
         // Remove atomically instead of truncating a file that could contain a partially written line.
         try? FileManager.default.removeItem(at: journalURL)
+    }
+
+    @MainActor
+    func appendManualPrompt(_ prompt: ExercisePrompt) async throws {
+        // Prepare a complete durable snapshot off the UI executor. If another callback
+        // changes the store while suspended, retry against its latest state.
+        while true {
+            try Task.checkCancellation()
+            let version = mutationVersion
+            var next = state
+            next.prompts.append(prompt)
+            var event = StudyEvent(date: prompt.createdAt, kind: "manual_intervention", promptID: prompt.id, source: "app")
+            event.sequence = next.events.count + 1
+            event.participantID = next.participantID
+            event.sessionID = sessionID
+            event.settings = next.settings
+            next.events.append(event)
+            let temporaryURL = try await Self.prepareSnapshot(next, beside: url)
+            defer { try? FileManager.default.removeItem(at: temporaryURL) }
+            try Task.checkCancellation()
+            guard version == mutationVersion else { continue }
+            // Only the atomic rename and publication happen on the main actor.
+            if FileManager.default.fileExists(atPath: url.path) {
+                _ = try FileManager.default.replaceItemAt(url, withItemAt: temporaryURL)
+            } else {
+                try FileManager.default.moveItem(at: temporaryURL, to: url)
+            }
+            state = next
+            mutationVersion += 1
+            try? FileManager.default.removeItem(at: journalURL)
+            return
+        }
+    }
+
+    @concurrent
+    nonisolated private static func prepareSnapshot(_ state: StudyState, beside url: URL) async throws -> URL {
+        let temporaryURL = url.deletingLastPathComponent().appendingPathComponent(UUID().uuidString + ".pending")
+        do {
+            try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            let data = try encoder.encode(state)
+            #if os(watchOS) || os(iOS)
+            try data.write(to: temporaryURL, options: .completeFileProtectionUntilFirstUserAuthentication)
+            #else
+            try data.write(to: temporaryURL)
+            #endif
+            return temporaryURL
+        } catch {
+            try? FileManager.default.removeItem(at: temporaryURL)
+            throw error
+        }
     }
 
     @discardableResult
@@ -139,7 +212,7 @@ final class StudyStore {
             return false
         }
         guard prompt.expiresAt > now else { throw StudyStoreError.expiredPrompt }
-        guard (prompt.plannedFor ?? prompt.createdAt) <= now else { throw StudyStoreError.invalidResponse }
+        guard (prompt.snoozedUntil ?? prompt.plannedFor ?? prompt.createdAt) <= now else { throw StudyStoreError.invalidResponse }
         if let exerciseID, !prompt.options.contains(where: { $0.id == exerciseID }) { throw StudyStoreError.invalidResponse }
         try transaction { state in
             if source == "notification", state.prompts[index].scheduledAt == nil {
@@ -175,15 +248,33 @@ final class StudyStore {
         guard state.prompts.contains(where: { ([.scheduled, .prepared].contains($0.status) && $0.expiresAt <= now) || $0.shouldIgnore(at: now) }) else { return }
         try transaction { state in
             for index in state.prompts.indices where state.prompts[index].shouldIgnore(at: now) {
-                state.prompts[index].status = .ignored
+                state.prompts[index].status = state.prompts[index].isManual ? .cancelled : .ignored
+                guard !state.prompts[index].isManual else { continue }
                 state.events.append(.init(date: now, kind: "ignored_break", promptID: state.prompts[index].id,
                                           source: "reconciliation", detail: "Ten-minute feedback window elapsed without completion or abandonment.",
                                           attributes: ["ignoredAt": String(state.prompts[index].activeUntil.timeIntervalSince1970)]))
             }
             for index in state.prompts.indices where [.scheduled, .prepared].contains(state.prompts[index].status) && state.prompts[index].expiresAt <= now {
-                state.prompts[index].status = .expired
-                state.events.append(.init(date: now, kind: "expired_no_response", promptID: state.prompts[index].id, source: "reconciliation",
-                                          detail: "No response recorded before expiry; does not prove delivery or that the user ignored it."))
+                let prompt = state.prompts[index]
+                state.prompts[index].status = prompt.isManual ? .cancelled : (prompt.openedAt == nil ? .expired : .ignored)
+                guard !prompt.isManual else { continue }
+                state.events.append(.init(date: now, kind: prompt.openedAt == nil ? "expired_no_response" : "ignored_break", promptID: prompt.id, source: "reconciliation",
+                                          detail: prompt.openedAt == nil ? "No response recorded before expiry; delivery is unknown." : "Opened invitation expired without a response."))
+            }
+        }
+    }
+
+    func leaveInvitation(promptID: UUID, at now: Date) throws {
+        guard let index = state.prompts.firstIndex(where: { $0.id == promptID }),
+              [.prepared, .scheduled, .selected].contains(state.prompts[index].status),
+              state.prompts[index].completedAt == nil, state.prompts[index].abandonedAt == nil else { return }
+        try transaction { state in
+            let manual = state.prompts[index].isManual
+            state.prompts[index].status = manual ? .cancelled : .ignored
+            state.prompts[index].exerciseSession?.pause(at: now)
+            if !manual {
+                state.events.append(.init(date: now, kind: "ignored_break", promptID: promptID, source: "app",
+                                          detail: "User confirmed leaving effort selection."))
             }
         }
     }

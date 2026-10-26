@@ -12,13 +12,15 @@ private extension Effort {
 }
 
 private enum WatchDestination: Hashable {
-    case preferences, permissions, signals, log, more, invitation(UUID), exercise(UUID)
+    case preferences, permissions, signals, log, more, manualInvitation, invitation(UUID), exercise(UUID)
 }
 
 struct ContentView: View {
     @Environment(\.scenePhase) private var scenePhase
     @State private var model = AppModel.shared
     @State private var path: [WatchDestination] = []
+    @State private var leavingInvitation: UUID?
+    @State private var manualPromptID: UUID?
 
     var body: some View {
         NavigationStack(path: $path) {
@@ -30,8 +32,11 @@ struct ContentView: View {
                     case .signals: SignalsView(model: model)
                     case .log: StudyView(model: model)
                     case .more: more
+                    case .manualInvitation: manualInvitation
                     case .invitation(let id): invitation(id)
-                    case .exercise(let id): ExerciseSessionView(model: model, promptID: id)
+                    case .exercise(let id): ExerciseSessionView(model: model, promptID: id) {
+                        path = [.invitation(id)]
+                    }
                     }
                 }
         }
@@ -41,36 +46,73 @@ struct ContentView: View {
             routeCurrentOptions()
         }
         .onChange(of: scenePhase) { _, phase in
-            if phase == .active { routeCurrentOptions() }
+            if phase == .active {
+                model.expireInvitations()
+                clearExpiredDestination()
+            }
         }
         .onChange(of: model.navigationRequest) { routeRequestedPrompt() }
+        .onChange(of: model.revision) { clearExpiredDestination() }
         .task {
             if model.requestedPromptID != nil { routeRequestedPrompt() }
             else { routeCurrentOptions() }
             while !Task.isCancelled {
                 await model.tickExercise()
+                model.expireInvitations()
+                clearExpiredDestination()
                 do { try await Task.sleep(for: .seconds(1)) } catch { return }
             }
         }
         .alert("Move Moment", isPresented: Binding(get: { model.message != nil }, set: { if !$0 { model.message = nil } })) {
             Button("OK") { model.message = nil }
         } message: { Text(model.message ?? "") }
+        .alert("Ignore this movement break?", isPresented: Binding(get: { leavingInvitation != nil }, set: { if !$0 { leavingInvitation = nil } })) {
+            if let id = leavingInvitation {
+                Button("Ignore break", role: .destructive) {
+                    if model.leaveInvitation(id) { path = [] }
+                    leavingInvitation = nil
+                }
+            }
+            Button("Stay", role: .cancel) { leavingInvitation = nil }
+        } message: {
+            Text("Going back will mark this intervention as ignored.")
+        }
+    }
+
+    private func clearExpiredDestination() {
+        guard let destination = path.last else { return }
+        let id: UUID
+        switch destination {
+        case .invitation(let promptID), .exercise(let promptID): id = promptID
+        case .manualInvitation:
+            guard let promptID = manualPromptID else { return }
+            id = promptID
+        default: return
+        }
+        guard let prompt = model.state.prompts.first(where: { $0.id == id }),
+              prompt.isAvailable(at: Date()) || prompt.isActive(at: Date()) else {
+            leavingInvitation = nil
+            path = []
+            return
+        }
     }
 
     private func routeCurrentOptions() {
-        if let prompt = model.activePrompt ?? model.currentPrompt { path = [.invitation(prompt.id)] }
+        if let prompt = model.activePrompt { path = [.invitation(prompt.id), .exercise(prompt.id)] }
+        else if let prompt = model.currentPrompt { path = [.invitation(prompt.id)] }
         else { path = [] }
     }
 
     private func routeRequestedPrompt() {
         guard let id = model.requestedPromptID,
-              let prompt = model.state.prompts.first(where: { $0.id == id }) else { path = []; return }
-        if prompt.status == .selected { path = [.exercise(id)] }
+              let prompt = model.state.prompts.first(where: { $0.id == id }),
+              prompt.isAvailable(at: Date()) || prompt.isActive(at: Date()) else { path = []; return }
+        if prompt.status == .selected && !model.requestedEffortSelection { path = [.invitation(id), .exercise(id)] }
         else { path = [.invitation(id)] }
     }
 
     private func openCurrentBreak() {
-        if let prompt = model.activePrompt { path.append(.exercise(prompt.id)) }
+        if let prompt = model.activePrompt { path = [.invitation(prompt.id), .exercise(prompt.id)] }
         else if let prompt = model.currentPrompt { path.append(.invitation(prompt.id)) }
         else { path.append(.more) }
     }
@@ -197,11 +239,36 @@ struct ContentView: View {
 
     private var more: some View {
         List {
-            Button("Trigger intervention") { model.triggerManualIntervention() }
+            NavigationLink("Trigger intervention", value: WatchDestination.manualInvitation)
                 .disabled(!model.dataAvailable)
             NavigationLink("Study log", value: WatchDestination.log)
             NavigationLink("Your signals", value: WatchDestination.signals)
         }.navigationTitle("More")
+    }
+
+    @ViewBuilder
+    private var manualInvitation: some View {
+        Group {
+            if let id = manualPromptID {
+                invitation(id)
+            } else {
+                ProgressView("Preparing your break…")
+            }
+        }
+        .task {
+            guard manualPromptID == nil else { return }
+            let id = await model.triggerManualIntervention()
+            guard !Task.isCancelled else { return }
+            if let id {
+                manualPromptID = id
+                if model.activePrompt?.id == id {
+                    withAnimation { path.append(.exercise(id)) }
+                }
+            } else if path.last == .manualInvitation {
+                withAnimation { _ = path.removeLast() }
+            }
+        }
+        .onDisappear { manualPromptID = nil }
     }
 
     @ViewBuilder
@@ -222,8 +289,18 @@ struct ContentView: View {
                         }
                     }
                 }
-                Button("Not now") { model.choose(promptID: prompt.id, exerciseID: nil) }.foregroundStyle(.secondary)
             }.navigationTitle("")
+                .navigationBarBackButtonHidden()
+                .toolbar {
+                    ToolbarItem(placement: .topBarLeading) {
+                        Button("Back", systemImage: "chevron.left") {
+                            if prompt.isManual {
+                                if model.leaveInvitation(id) { path = [] }
+                            } else { leavingInvitation = id }
+                        }
+                        .labelStyle(.iconOnly)
+                    }
+                }
         } else {
             ContentUnavailableView("Break unavailable", systemImage: "clock", description: Text("This invitation has ended. A new opportunity will appear on your home screen."))
         }
@@ -232,10 +309,13 @@ struct ContentView: View {
 
 private struct ExerciseSessionView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.isLuminanceReduced) private var isLuminanceReduced
+    @Environment(\.scenePhase) private var scenePhase
     let model: AppModel
     let promptID: UUID
+    let onBack: () -> Void
     @State private var showingInfo = false
-    @State private var confirmingEnd = false
+    @State private var confirmingBack = false
 
     private var prompt: ExercisePrompt? { model.state.prompts.first { $0.id == promptID } }
 
@@ -253,10 +333,14 @@ private struct ExerciseSessionView: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .containerBackground(exercise.effort.color.opacity(0.1).gradient, for: .navigation)
                     .toolbar {
-                        ToolbarItemGroup(placement: .bottomBar) {
-                            Button(session.endedAt == nil ? "End exercise" : "Didn’t finish", systemImage: "xmark") {
-                                confirmingEnd = true
+                        ToolbarItem(placement: .topBarLeading) {
+                            Button("Back", systemImage: "chevron.left") {
+                                if session.startedAt != nil { confirmingBack = true }
+                                else { onBack() }
                             }
+                            .labelStyle(.iconOnly)
+                        }
+                        ToolbarItemGroup(placement: .bottomBar) {
                             Spacer()
                             if session.endedAt != nil {
                                 Button("I did it", systemImage: "checkmark") { model.finish(prompt, completed: true) }
@@ -273,7 +357,15 @@ private struct ExerciseSessionView: View {
                                 .labelStyle(.iconOnly)
                             }
                             Spacer()
-                            Button("Exercise information", systemImage: "info") { showingInfo = true }
+                        }
+                        ToolbarItem(placement: .topBarTrailing) {
+                            Button("Exercise information", systemImage: "info") {
+                                Task {
+                                    if session.runningSince != nil { await model.pauseExercise(prompt.id) }
+                                    showingInfo = true
+                                }
+                            }
+                            .labelStyle(.iconOnly)
                         }
                     }
                     .sheet(isPresented: $showingInfo) {
@@ -294,9 +386,16 @@ private struct ExerciseSessionView: View {
                             .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Done") { showingInfo = false } } }
                         }
                     }
-                    .confirmationDialog("End this break?", isPresented: $confirmingEnd, titleVisibility: .visible) {
-                        Button("End break", role: .destructive) { model.finish(prompt, completed: false) }
-                        Button("Keep going", role: .cancel) { }
+                    .alert("Go back to effort selection?", isPresented: $confirmingBack) {
+                        Button("Go back", role: .destructive) {
+                            Task {
+                                if session.runningSince != nil { await model.pauseExercise(prompt.id) }
+                                onBack()
+                            }
+                        }
+                        Button("Stay", role: .cancel) { }
+                    } message: {
+                        Text("Your timer will stay paused. Choosing a different exercise will reset it.")
                     }
                 }
             } else {
@@ -304,6 +403,7 @@ private struct ExerciseSessionView: View {
             }
         }
         .navigationTitle("")
+        .navigationBarBackButtonHidden()
     }
 
     private func timer(exercise: Exercise, session: ExerciseSession) -> some View {
@@ -311,12 +411,22 @@ private struct ExerciseSessionView: View {
             Text(exercise.title).font(.headline).lineLimit(2).minimumScaleFactor(0.85)
             TimelineView(.periodic(from: .now, by: 1)) { timeline in
                 let remaining = session.remaining(for: exercise, at: timeline.date)
+                let animateDigits = !reduceMotion && !isLuminanceReduced && scenePhase == .active
+                    && timeline.cadence == .live && session.runningSince != nil
                 Text("\(remaining / 60):\(String(format: "%02d", remaining % 60))")
                     .font(.system(size: 58, weight: .medium, design: .rounded))
                     .monospacedDigit().foregroundStyle(exercise.effort.color)
                     .minimumScaleFactor(0.6).lineLimit(1)
-                    .contentTransition(.numericText(countsDown: true))
-                    .animation(reduceMotion || session.runningSince == nil ? nil : .easeInOut(duration: 0.3), value: remaining)
+                    .contentTransition(animateDigits ? .numericText(countsDown: true) : .identity)
+                    .animation(animateDigits ? .easeInOut(duration: 0.3) : nil, value: remaining)
+                    // Discard an in-flight digit transition when Always On reduces rendering.
+                    .id(animateDigits)
+                    .transaction { transaction in
+                        if !animateDigits {
+                            transaction.animation = nil
+                            transaction.disablesAnimations = true
+                        }
+                    }
                     .accessibilityLabel("\(remaining / 60) minutes and \(remaining % 60) seconds remaining")
             }
             Text(session.runningSince != nil ? "Keep moving" : (session.startedAt == nil ? "Press play to begin" : "Paused"))

@@ -54,6 +54,9 @@ enum OpportunityEngine {
         if let end = ReminderPlanning.cooldownEnd(settings: settings, history: history, at: now, calendar: calendar), now < end {
             reasons.append("Reminder cooldown is active")
         }
+        if history.contains(where: { [.prepared, .scheduled].contains($0.status) && ($0.snoozedUntil ?? .distantPast) > now }) {
+            reasons.append("A movement invitation has been delayed")
+        }
         if history.contains(where: { $0.isActive(at: now) }) {
             reasons.append("An exercise is awaiting feedback")
         }
