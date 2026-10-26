@@ -49,13 +49,15 @@ struct ContentView: View {
             if phase == .active {
                 model.expireInvitations()
                 clearExpiredDestination()
+                // Wrist-down/wake also activates the scene. Keep the current timer or other valid screen.
+                if path.isEmpty { routeCurrentOptions() }
             }
         }
         .onChange(of: model.navigationRequest) { routeRequestedPrompt() }
         .onChange(of: model.revision) { clearExpiredDestination() }
         .task {
-            if model.requestedPromptID != nil { routeRequestedPrompt() }
-            else { routeCurrentOptions() }
+            clearExpiredDestination()
+            if path.isEmpty { routeCurrentOptions() }
             while !Task.isCancelled {
                 await model.tickExercise()
                 model.expireInvitations()
@@ -98,7 +100,10 @@ struct ContentView: View {
     }
 
     private func routeCurrentOptions() {
-        if let prompt = model.activePrompt { path = [.invitation(prompt.id), .exercise(prompt.id)] }
+        model.expireInvitations()
+        leavingInvitation = nil
+        // Fresh entry starts at effort selection; scene wake preserves the existing navigation path.
+        if let prompt = model.activePrompt { path = [.invitation(prompt.id)] }
         else if let prompt = model.currentPrompt { path = [.invitation(prompt.id)] }
         else { path = [] }
     }

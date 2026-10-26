@@ -12,6 +12,8 @@
 		A10000000000000000000001 /* MoveMoment Complications.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = A10000000000000000000002 /* MoveMoment Complications.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		A10000000000000000000003 /* ComplicationSnapshot.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000004 /* ComplicationSnapshot.swift */; };
 		A20000000000000000000001 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000002 /* Assets.xcassets */; };
+		B10000000000000000000001 /* CompanionData.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000002 /* CompanionData.swift */; };
+		B10000000000000000000007 /* AppIcon.icon in Resources */ = {isa = PBXBuildFile; fileRef = 433E5E39307F86870027E89B /* AppIcon.icon */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -59,6 +61,7 @@
 		A10000000000000000000002 /* MoveMoment Complications.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; path = "MoveMoment Complications.appex"; sourceTree = BUILT_PRODUCTS_DIR; };
 		A10000000000000000000004 /* ComplicationSnapshot.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = ComplicationSnapshot.swift; path = "ExerciseAnalyser Watch App/Core/ComplicationSnapshot.swift"; sourceTree = SOURCE_ROOT; };
 		A20000000000000000000002 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; name = Assets.xcassets; path = "ExerciseAnalyser Watch App/Assets.xcassets"; sourceTree = SOURCE_ROOT; };
+		B10000000000000000000002 /* CompanionData.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = CompanionData.swift; path = "ExerciseAnalyser Watch App/Core/CompanionData.swift"; sourceTree = SOURCE_ROOT; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -70,6 +73,16 @@
 		A10000000000000000000005 /* MoveMoment Complications */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
 			path = "MoveMoment Complications";
+			sourceTree = "<group>";
+		};
+		B10000000000000000000003 /* ExerciseAnalyser iPhone App */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = "ExerciseAnalyser iPhone App";
+			sourceTree = "<group>";
+		};
+		B10000000000000000000004 /* Companion Shared */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = "Companion Shared";
 			sourceTree = "<group>";
 		};
 /* End PBXFileSystemSynchronizedRootGroup section */
@@ -85,12 +98,20 @@
 			files = (
 			);
 		};
+		B10000000000000000000005 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			files = (
+			);
+		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
 		43DBB754307A3E9200F24E6C = {
 			isa = PBXGroup;
 			children = (
+				B10000000000000000000003 /* ExerciseAnalyser iPhone App */,
+				B10000000000000000000004 /* Companion Shared */,
+				B10000000000000000000002 /* CompanionData.swift */,
 				43DBB765307A3E9300F24E6C /* ExerciseAnalyser Watch App */,
 				A10000000000000000000005 /* MoveMoment Complications */,
 				A10000000000000000000004 /* ComplicationSnapshot.swift */,
@@ -117,6 +138,8 @@
 			isa = PBXNativeTarget;
 			buildConfigurationList = 43DBB772307A3E9500F24E6C /* Build configuration list for PBXNativeTarget "ExerciseAnalyser" */;
 			buildPhases = (
+				B10000000000000000000006 /* Sources */,
+				B10000000000000000000005 /* Frameworks */,
 				43DBB759307A3E9300F24E6C /* Resources */,
 				43DBB771307A3E9500F24E6C /* Embed Watch Content */,
 			);
@@ -125,10 +148,14 @@
 			dependencies = (
 				43DBB764307A3E9300F24E6C /* PBXTargetDependency */,
 			);
+			fileSystemSynchronizedGroups = (
+				B10000000000000000000003 /* ExerciseAnalyser iPhone App */,
+				B10000000000000000000004 /* Companion Shared */,
+			);
 			name = ExerciseAnalyser;
 			productName = ExerciseAnalyser;
 			productReference = 43DBB75B307A3E9300F24E6C /* ExerciseAnalyser.app */;
-			productType = "com.apple.product-type.application.watchapp2-container";
+			productType = "com.apple.product-type.application";
 		};
 		43DBB760307A3E9300F24E6C /* ExerciseAnalyser Watch App */ = {
 			isa = PBXNativeTarget;
@@ -146,6 +173,7 @@
 			);
 			fileSystemSynchronizedGroups = (
 				43DBB765307A3E9300F24E6C /* ExerciseAnalyser Watch App */,
+				B10000000000000000000004 /* Companion Shared */,
 			);
 			name = "ExerciseAnalyser Watch App";
 			productName = "ExerciseAnalyser Watch App";
@@ -213,6 +241,7 @@
 		43DBB759307A3E9300F24E6C /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			files = (
+				B10000000000000000000007 /* AppIcon.icon in Resources */,
 			);
 		};
 		43DBB75F307A3E9300F24E6C /* Resources */ = {
@@ -239,6 +268,12 @@
 			isa = PBXSourcesBuildPhase;
 			files = (
 				A10000000000000000000003 /* ComplicationSnapshot.swift in Sources */,
+			);
+		};
+		B10000000000000000000006 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			files = (
+				B10000000000000000000001 /* CompanionData.swift in Sources */,
 			);
 		};
 /* End PBXSourcesBuildPhase section */
@@ -390,7 +425,8 @@
 				INFOPLIST_KEY_NSHealthShareUsageDescription = "Use activity, heart rate, sleep, and workouts to find suitable moments for movement breaks.";
 				INFOPLIST_KEY_NSMotionUsageDescription = "Use motion history to avoid reminders while moving or travelling and estimate low-movement periods.";
 				INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown";
-				INFOPLIST_KEY_WKWatchOnly = YES;
+				INFOPLIST_KEY_WKCompanionAppBundleIdentifier = com.d3xel.ExerciseAnalyser;
+				INFOPLIST_KEY_WKRunsIndependentlyOfCompanionApp = YES;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
@@ -428,7 +464,8 @@
 				INFOPLIST_KEY_NSHealthShareUsageDescription = "Use activity, heart rate, sleep, and workouts to find suitable moments for movement breaks.";
 				INFOPLIST_KEY_NSMotionUsageDescription = "Use motion history to avoid reminders while moving or travelling and estimate low-movement periods.";
 				INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown";
-				INFOPLIST_KEY_WKWatchOnly = YES;
+				INFOPLIST_KEY_WKCompanionAppBundleIdentifier = com.d3xel.ExerciseAnalyser;
+				INFOPLIST_KEY_WKRunsIndependentlyOfCompanionApp = YES;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
@@ -453,36 +490,52 @@
 		43DBB773307A3E9500F24E6C /* Debug configuration for PBXNativeTarget "ExerciseAnalyser" */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 2;
 				DEVELOPMENT_TEAM = 3DGR463ZY2;
-				INFOPLIST_KEY_CFBundleDisplayName = ExerciseAnalyser;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = "Move Moment";
+				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations = UIInterfaceOrientationPortrait;
 				IPHONEOS_DEPLOYMENT_TARGET = 27.0;
 				MARKETING_VERSION = 1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.d3xel.ExerciseAnalyser;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = iphoneos;
+				SUPPORTS_MACCATALYST = NO;
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
 				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
 				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 1;
 			};
 			name = Debug;
 		};
 		43DBB774307A3E9500F24E6C /* Release configuration for PBXNativeTarget "ExerciseAnalyser" */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 2;
 				DEVELOPMENT_TEAM = 3DGR463ZY2;
-				INFOPLIST_KEY_CFBundleDisplayName = ExerciseAnalyser;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = "Move Moment";
+				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations = UIInterfaceOrientationPortrait;
 				IPHONEOS_DEPLOYMENT_TARGET = 27.0;
 				MARKETING_VERSION = 1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.d3xel.ExerciseAnalyser;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = iphoneos;
+				SUPPORTS_MACCATALYST = NO;
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
 				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
 				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 1;
 				VALIDATE_PRODUCT = YES;
 			};
 			name = Release;

@@ -3,6 +3,7 @@ import UserNotifications
 @MainActor
 final class NotificationService: NSObject, UNUserNotificationCenterDelegate {
     private let center = UNUserNotificationCenter.current()
+    private var relayedReminders = UserDefaults.standard.dictionary(forKey: "companion.relayedReminders") as? [String: Double] ?? [:]
     var onResponse: ((UUID, String, Date) async -> Void)?
     var onForeground: ((UUID) -> Void)?
 
@@ -21,17 +22,9 @@ final class NotificationService: NSObject, UNUserNotificationCenterDelegate {
     }
 
     func registerCategories(for prompts: [ExercisePrompt]) {
-        let categories = prompts.suffix(64).map { prompt in
-            // Keep within the system action limit while retaining every exercise in the app.
-            let actions = [
-                UNNotificationAction(identifier: "movement.choose", title: "Choose exercise", options: [.foreground]),
-                UNNotificationAction(identifier: "movement.snooze.5", title: "In 5 minutes", options: []),
-                UNNotificationAction(identifier: "movement.snooze.10", title: "In 10 minutes", options: [])
-            ]
-            return UNNotificationCategory(identifier: "movement.\(prompt.id.uuidString)", actions: actions,
-                                          intentIdentifiers: [], options: [.customDismissAction])
-        }
-        center.setNotificationCategories(Set(categories))
+        // Retain old categories for invitations already scheduled before this update.
+        let legacy = prompts.suffix(64).map { MovementNotificationCategory.make(identifier: "movement.\($0.id.uuidString)") }
+        center.setNotificationCategories(Set(legacy + [MovementNotificationCategory.make()]))
     }
 
     func schedule(_ prompt: ExercisePrompt) async throws {
@@ -40,14 +33,15 @@ final class NotificationService: NSObject, UNUserNotificationCenterDelegate {
         content.subtitle = prompt.method.title
         content.body = prompt.options.map { "\($0.exercise.effort.title): \($0.exercise.title) (\($0.exercise.minutes) min)" }.joined(separator: "\n")
         content.sound = .default
-        content.categoryIdentifier = "movement.\(prompt.id.uuidString)"
+        content.categoryIdentifier = MovementNotification.categoryID
         content.threadIdentifier = "movement"
         content.userInfo = ["promptID": prompt.id.uuidString]
         if let date = prompt.snoozedUntil {
             // Explicit user delays use an OS timer, independent of best-effort background refresh.
-            try await center.add(UNNotificationRequest(identifier: prompt.id.uuidString, content: content,
+            try await center.add(UNNotificationRequest(identifier: MovementNotification.requestID(prompt.id), content: content,
                 trigger: UNTimeIntervalNotificationTrigger(timeInterval: max(1, date.timeIntervalSinceNow), repeats: false)))
             center.removeDeliveredNotifications(withIdentifiers: [prompt.id.uuidString])
+            relay(prompt, content: content)
             return
         }
         guard prompt.plannedFor == nil else {
@@ -60,7 +54,16 @@ final class NotificationService: NSObject, UNUserNotificationCenterDelegate {
               ReminderPlanning.freeMinutes(at: now, context: context, settings: prompt.settings) >= Double((prompt.options.map { $0.exercise.minutes }.max() ?? 5) + 2) else {
             throw NSError(domain: "Notifications", code: 2, userInfo: [NSLocalizedDescriptionKey: "Calendar no longer has a free movement window."])
         }
-        try await center.add(UNNotificationRequest(identifier: prompt.id.uuidString, content: content, trigger: nil))
+        try await center.add(UNNotificationRequest(identifier: MovementNotification.requestID(prompt.id), content: content, trigger: nil))
+        relay(prompt, content: content)
+    }
+
+    private func relay(_ prompt: ExercisePrompt, content: UNNotificationContent) {
+        relayedReminders = relayedReminders.filter { $0.value > Date().timeIntervalSince1970 }
+        relayedReminders[prompt.id.uuidString] = prompt.expiresAt.addingTimeInterval(24 * 60 * 60).timeIntervalSince1970
+        UserDefaults.standard.set(relayedReminders, forKey: "companion.relayedReminders")
+        CompanionConnection.shared.send(.reminder(.init(promptID: prompt.id, title: content.title,
+            subtitle: content.subtitle, body: content.body, dueAt: prompt.snoozedUntil ?? Date(), expiresAt: prompt.expiresAt)))
     }
 
     func scheduleExerciseEnd(promptID: UUID, exercise: Exercise, at date: Date) async throws {
@@ -80,6 +83,12 @@ final class NotificationService: NSObject, UNUserNotificationCenterDelegate {
     }
 
     func remove(_ ids: [UUID]) {
+        let mirrored = ids.filter { relayedReminders[$0.uuidString] != nil }
+        if !mirrored.isEmpty {
+            CompanionConnection.shared.send(.cancel(mirrored))
+            for id in mirrored { relayedReminders.removeValue(forKey: id.uuidString) }
+            UserDefaults.standard.set(relayedReminders, forKey: "companion.relayedReminders")
+        }
         let identifiers = ids.map(\.uuidString)
         center.removePendingNotificationRequests(withIdentifiers: identifiers)
         center.removeDeliveredNotifications(withIdentifiers: identifiers)

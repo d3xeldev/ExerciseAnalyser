@@ -5,6 +5,7 @@ import Observation
 import UserNotifications
 import WatchKit
 import WidgetKit
+import WatchConnectivity
 
 @MainActor
 @Observable
@@ -93,6 +94,36 @@ final class AppModel {
         calendarObserver = NotificationCenter.default.addObserver(forName: .EKEventStoreChanged, object: nil, queue: .main) { [weak self] _ in
             Task { @MainActor in await self?.calendarChanged() }
         }
+        CompanionConnection.shared.onPacket = { [weak self] packet in
+            guard let self, Date().timeIntervalSince(packet.createdAt) < 24 * 60 * 60 else { return }
+            let key = "companion.handledRequests"
+            var handled = UserDefaults.standard.stringArray(forKey: key) ?? []
+            guard !handled.contains(packet.id.uuidString) else { return }
+            handled.append(packet.id.uuidString)
+            UserDefaults.standard.set(Array(handled.suffix(100)), forKey: key)
+            switch packet.payload {
+            case .requestSnapshot:
+                await self.refreshAccessStatus()
+                self.publishPhoneSnapshot()
+            case .requestExport:
+                self.exportForPhone()
+            case .snooze(let request):
+                let now = Date()
+                guard request.isValid(requestedAt: packet.createdAt, now: now),
+                      let prompt = self.state.prompts.first(where: { $0.id == request.promptID }),
+                      prompt.isAvailable(at: now), abs(prompt.expiresAt.timeIntervalSince(request.expiresAt)) < 1 else {
+                    self.record(.init(date: now, kind: "companion_snooze_rejected", promptID: request.promptID,
+                                      source: "companion", detail: "Invitation changed, expired, or phone action arrived too late."))
+                    return
+                }
+                self.record(.init(date: now, kind: "companion_snooze_received", promptID: request.promptID, source: "companion"))
+                await self.snoozePrompt(id: request.promptID, minutes: request.minutes, at: packet.createdAt)
+            default: break
+            }
+        }
+        CompanionConnection.shared.onError = { [weak self] error in self?.message = error }
+        CompanionConnection.shared.onActivated = { [weak self] in self?.publishPhoneSnapshot() }
+        CompanionConnection.shared.start()
         publishComplications()
         if settings.monitoring {
             // Do not replace the task that launched us before its callback is consumed.
@@ -264,6 +295,7 @@ final class AppModel {
         if settings.monitoring { startObservers() }
         await evaluate(source: "foreground")
         await inspectComplicationConfigurations()
+        publishPhoneSnapshot()
     }
 
     func enteredBackground() {
@@ -767,6 +799,23 @@ final class AppModel {
         } catch { message = "Export failed: \(error.localizedDescription)" }
     }
 
+    private func exportForPhone() {
+        guard let store else {
+            CompanionConnection.shared.send(.exportError("Study data is unavailable on the watch."))
+            return
+        }
+        do {
+            let batch = UUID().uuidString
+            let directory = FileManager.default.temporaryDirectory.appendingPathComponent("PhoneExports/\(batch)")
+            record(.init(date: Date(), kind: "companion_export_prepared", source: "companion",
+                         detail: "Files queued for iPhone; this does not confirm receipt or sharing."))
+            for url in try store.export(to: directory) {
+                CompanionConnection.shared.transferFile(url, metadata: ["batch": batch, "name": url.lastPathComponent,
+                    "participantID": state.participantID.uuidString])
+            }
+        } catch { CompanionConnection.shared.send(.exportError(error.localizedDescription)) }
+    }
+
     private func setPendingRefresh(_ request: RefreshRequest?) {
         pendingRefresh = request
         if let request, let data = try? JSONEncoder().encode(request) {
@@ -830,6 +879,7 @@ final class AppModel {
     }
 
     private func publishComplications() {
+        publishPhoneSnapshot()
         let now = Date()
         let invitation = currentPrompt ?? state.prompts.first { $0.status == .scheduled && ($0.plannedFor.map { $0 > now } ?? false) }
         var snapshot = ComplicationSnapshot(generatedAt: now, monitoring: settings.monitoring, dataAvailable: dataAvailable,
@@ -895,6 +945,15 @@ final class AppDelegate: NSObject, WKApplicationDelegate {
         for task in backgroundTasks {
             if let refresh = task as? WKApplicationRefreshBackgroundTask {
                 BackgroundRefreshExecution(refresh).start()
+            } else if let connectivity = task as? WKWatchConnectivityRefreshBackgroundTask {
+                Task { @MainActor in
+                    let deadline = Date().addingTimeInterval(20)
+                    while Date() < deadline && (WCSession.default.activationState != .activated || WCSession.default.hasContentPending) {
+                        try? await Task.sleep(for: .milliseconds(100))
+                    }
+                    await CompanionConnection.shared.finishPendingWork()
+                    connectivity.setTaskCompletedWithSnapshot(false)
+                }
             } else if let snapshot = task as? WKSnapshotRefreshBackgroundTask {
                 snapshot.setTaskCompleted(restoredDefaultState: true, estimatedSnapshotExpiration: .distantFuture, userInfo: nil)
             } else {
