@@ -165,6 +165,13 @@ private struct PhonePreferencesView: View {
             Section("Last phone notification activity") {
                 Text(model.notificationActivity).font(.footnote)
             }
+            Section("Keep the watch timer visible") {
+                Label("Set Return to Clock to 1 hour", systemImage: "applewatch")
+                Text("On your Apple Watch: Settings → General → Return to Clock → ExerciseAnalyser → Custom → After 1 hour.")
+                    .font(.footnote)
+                Text("This avoids the usual automatic return to the watch face during a movement break. The display can still dim, and you can leave the app at any time.")
+                    .font(.footnote).foregroundStyle(.secondary)
+            }
             Section("Watch permissions") {
                 if let snapshot = model.snapshot {
                     ForEach(snapshot.permissions) { detail in LabeledContent(detail.title, value: detail.value) }

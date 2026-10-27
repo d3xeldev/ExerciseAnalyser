@@ -8,7 +8,8 @@ Move Moment is a native SwiftUI Apple Watch research app with an iPhone companio
 2. Select **ExerciseAnalyser Watch App** and a watch destination. For a physical watch, configure your signing team, HealthKit, and HealthKit Background Delivery. Provision the App Group `group.com.d3xel.ExerciseAnalyser` for both the app and **MoveMoment Complications**. If you change its identifier, update both entitlements and `ComplicationSnapshot.appGroup`.
 3. In **Preferences**, request Health, Calendar, Motion, and Notification access. HealthKit access is read-only, and the app never modifies calendar events. **Health configured** means setup was completed; HealthKit does not disclose individual read grants.
 4. Configure active hours, reminder frequency, exploration rate, and exercises, then enable monitoring. Keep at least one exercise enabled in each effort tier.
-5. Optionally add Move Moment complications to your watch face and keep Background App Refresh enabled. Use **More → Your signals** to inspect signal availability and background-monitoring diagnostics.
+5. On Apple Watch, set **Settings → General → Return to Clock → ExerciseAnalyser → Custom → After 1 hour** to keep the timer visible during movement breaks. The app shows this tip before the first timer start; it is also available in watch Preferences, exercise information, and iPhone Preferences. Acknowledging the tip does not change or verify the system setting.
+6. Optionally add Move Moment complications to your watch face and keep Background App Refresh enabled. Use **More → Your signals** to inspect signal availability and background-monitoring diagnostics.
 
 ## iPhone companion
 

@@ -321,6 +321,8 @@ private struct ExerciseSessionView: View {
     let onBack: () -> Void
     @State private var showingInfo = false
     @State private var confirmingBack = false
+    @State private var showingDisplayTip = false
+    @AppStorage("hasSeenReturnToClockTip") private var hasSeenDisplayTip = false
 
     private var prompt: ExercisePrompt? { model.state.prompts.first { $0.id == promptID } }
 
@@ -353,8 +355,10 @@ private struct ExerciseSessionView: View {
                                     .disabled(session.assessment == nil)
                             } else {
                                 Button {
-                                    if session.runningSince == nil { model.startExercise(prompt.id) }
-                                    else { Task { await model.pauseExercise(prompt.id) } }
+                                    if session.runningSince == nil {
+                                        if !hasSeenDisplayTip { showingDisplayTip = true }
+                                        else { model.startExercise(prompt.id) }
+                                    } else { Task { await model.pauseExercise(prompt.id) } }
                                 } label: {
                                     Label(session.runningSince != nil ? "Pause exercise" : (session.startedAt == nil ? "Start exercise" : "Resume exercise"),
                                           systemImage: session.runningSince == nil ? "play.fill" : "pause.fill")
@@ -373,6 +377,22 @@ private struct ExerciseSessionView: View {
                             .labelStyle(.iconOnly)
                         }
                     }
+                    .sheet(isPresented: $showingDisplayTip) {
+                        NavigationStack {
+                            ScrollView {
+                                VStack(alignment: .leading, spacing: 16) {
+                                    TimerDisplayGuidance()
+                                    Button("Start exercise") {
+                                        hasSeenDisplayTip = true
+                                        showingDisplayTip = false
+                                        model.startExercise(prompt.id)
+                                    }
+                                    .buttonStyle(.borderedProminent)
+                                    Button("Not now", role: .cancel) { showingDisplayTip = false }
+                                }.padding()
+                            }.navigationTitle("Before you start")
+                        }
+                    }
                     .sheet(isPresented: $showingInfo) {
                         NavigationStack {
                             List {
@@ -380,6 +400,7 @@ private struct ExerciseSessionView: View {
                                     Text("\(exercise.minutes) min · \(exercise.effort.title)").foregroundStyle(exercise.effort.color)
                                     Text(exercise.instructions)
                                 }
+                                Section("Keep the timer visible") { TimerDisplayGuidance() }
                                 Section("Movement check") {
                                     Text(exercise.measurementHint)
                                     Text(session.assessment?.explanation ?? "The movement check is an estimate, not proof that an exercise was done. Missing readings stay unknown.")
@@ -537,6 +558,18 @@ private struct SignalsView: View {
     }
 }
 
+private struct TimerDisplayGuidance: View {
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Label("Keep your timer on screen", systemImage: "applewatch").font(.headline)
+            Text("Set a longer return time so your watch doesn’t switch to the clock during an exercise.")
+            Text("On Apple Watch, open Settings → General → Return to Clock → ExerciseAnalyser → Custom → After 1 hour.")
+            Text("The screen can still dim. Pressing the Crown or leaving the app still returns you to other screens.")
+                .foregroundStyle(.secondary)
+        }.font(.caption)
+    }
+}
+
 private struct PermissionsView: View {
     let model: AppModel
 
@@ -573,6 +606,12 @@ private struct SettingsView: View {
             Section {
                 NavigationLink("Permissions", value: WatchDestination.permissions)
                 NavigationLink("Calendars") { CalendarSelectionView(model: model) }
+            }
+            Section {
+                NavigationLink("Keep the timer visible") {
+                    ScrollView { TimerDisplayGuidance().padding() }
+                        .navigationTitle("Timer display")
+                }
             }
             Section("Reminder rhythm") {
                 Picker("Inactivity", selection: setting(\.inactivityMinutes)) {
