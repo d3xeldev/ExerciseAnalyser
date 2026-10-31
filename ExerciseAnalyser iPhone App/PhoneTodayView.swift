@@ -2,12 +2,17 @@ import SwiftUI
 
 struct PhoneTodayView: View {
     let model: PhoneModel
-    let openPreferences: () -> Void
+    let openSettings: () -> Void
     let openPrompt: (UUID) -> Void
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
-    @ScaledMetric(relativeTo: .largeTitle) private var stepSize = 88
+    @ScaledMetric(relativeTo: .largeTitle) private var interventionSize = 96
     @State private var showingSync = false
+    @State private var showingWeek = false
+    @ScaledMetric(relativeTo: .caption) private var weekColumnWidth = 28
+    @State private var scrollOffset: CGFloat = 0
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    private let spacing: CGFloat = 16
 
     private var snapshot: CompanionSnapshot? {
         guard let snapshot = model.snapshot, snapshot.dataAvailable else { return nil }
@@ -16,26 +21,45 @@ struct PhoneTodayView: View {
 
     var body: some View {
         TimelineView(.periodic(from: .now, by: 60)) { timeline in
-            ScrollView {
-                VStack(spacing: 18) {
-                    if let snapshot {
-                        hero(snapshot, now: timeline.date)
-                        if let prompt = snapshot.prompts.first(where: { $0.outcome == "Scheduled" && $0.expiresAt > timeline.date }) {
-                            invitation(prompt)
+            GeometryReader { geometry in
+                let contentWidth = min(geometry.size.width, 620) - spacing * 2
+                let tileHeight = dynamicTypeSize >= .xLarge ? contentWidth : (contentWidth - spacing) / 2
+                let heroHeight = geometry.size.height * 0.5 - spacing
+                let fade = max(0, 1 - scrollOffset / max(heroHeight * 0.7, 1))
+                ScrollView {
+                    VStack(spacing: spacing) {
+                        if let snapshot {
+                            VStack(spacing: spacing) {
+                                hero(snapshot, now: timeline.date)
+                                if let prompt = snapshot.prompts.first(where: { $0.outcome == "Scheduled" && $0.expiresAt > timeline.date }) {
+                                    invitation(prompt)
+                                }
+                            }
+                            .frame(minHeight: heroHeight)
+                            .opacity(fade)
+                            .offset(y: reduceMotion ? 0 : scrollOffset * 0.15)
+                            .accessibilityHidden(fade == 0)
+                            .allowsHitTesting(fade > 0.1)
+                            weekCard(snapshot, height: tileHeight)
+                            metrics(snapshot, now: timeline.date)
+                            syncFooter(snapshot, now: timeline.date)
+                        } else {
+                            welcome
                         }
-                        weekCard(snapshot)
-                        metrics(snapshot, now: timeline.date)
-                        syncFooter(snapshot, now: timeline.date)
-                    } else {
-                        welcome
                     }
+                    .padding(.horizontal, spacing)
+                    .padding(.bottom, spacing)
+                    .frame(maxWidth: 620)
+                    .frame(maxWidth: .infinity)
                 }
-                .padding(.horizontal, 20)
-                .padding(.bottom, 28)
-                .frame(maxWidth: 620)
-                .frame(maxWidth: .infinity)
+                .scrollEdgeEffectStyle(.soft, for: .top)
+                .onScrollGeometryChange(for: CGFloat.self) { scroll in
+                    max(0, scroll.contentOffset.y + scroll.contentInsets.top)
+                } action: { _, offset in
+                    scrollOffset = offset
+                }
             }
-            .background { sky.ignoresSafeArea() }
+            .background { watchGlow(at: timeline.date).ignoresSafeArea() }
             .foregroundStyle(.white)
             .navigationTitle("Move Moment")
             .navigationBarTitleDisplayMode(.inline)
@@ -46,163 +70,189 @@ struct PhoneTodayView: View {
                     Button("Sync with watch", systemImage: "arrow.clockwise") {
                         model.refresh()
                         showingSync = true
-                    }.tint(.white)
+                    }.tint(MovementPalette.low)
+                }
+            }
+            .sheet(isPresented: $showingWeek) {
+                if let snapshot {
+                    NavigationStack { DailyDetailView(snapshot: snapshot) }
+                        .presentationDetents([.large])
+                        .presentationDragIndicator(.visible)
+                        .presentationCornerRadius(32)
+                        .preferredColorScheme(.dark)
+                        .tint(MovementPalette.low)
                 }
             }
             .alert("Sync requested", isPresented: $showingSync) {
                 Button("OK", role: .cancel) {}
             } message: {
-                Text("Your watch will send its latest summary when connected. Open Move Moment on your watch for a fresh activity check.")
+                Text("Open Move Moment on your watch to refresh your day.")
             }
         }
     }
 
-    private var sky: some View {
-        GeometryReader { geometry in
-            ZStack(alignment: .topLeading) {
-                LinearGradient(colors: [Color(red: 0.08, green: 0.29, blue: 0.40), Color(red: 0.06, green: 0.17, blue: 0.29), Color(red: 0.04, green: 0.10, blue: 0.20)],
-                               startPoint: .topLeading, endPoint: .bottomTrailing)
-                Circle()
-                    .fill(RadialGradient(colors: [Color.cyan.opacity(0.22), .clear], center: .center, startRadius: 0, endRadius: geometry.size.width * 0.65))
-                    .frame(width: geometry.size.width * 1.3, height: geometry.size.width * 1.3)
-                    .offset(x: -geometry.size.width * 0.35, y: -80)
-            }
+    private func watchGlow(at now: Date) -> some View {
+        let day = snapshot?.days.last { Calendar.current.isDate($0.date, inSameDayAs: now) }
+        let color = MovementPalette.effort(day?.selections?.dominant)
+        return GeometryReader { geometry in
+            RadialGradient(
+                stops: [
+                    .init(color: color.opacity(0.3), location: 0),
+                    .init(color: color.opacity(0.1), location: 0.45),
+                    .init(color: .clear, location: 1)
+                ],
+                center: .top,
+                startRadius: 0,
+                endRadius: geometry.size.width * 1.15
+            )
+            .background(.black)
         }.accessibilityHidden(true)
     }
 
     private func hero(_ snapshot: CompanionSnapshot, now: Date) -> some View {
-        let steps = snapshot.checkedAt.map { Calendar.current.isDate($0, inSameDayAs: now) } == true ? snapshot.steps : nil
-        return VStack(spacing: 8) {
+        let today = snapshot.days.last { Calendar.current.isDate($0.date, inSameDayAs: now) }
+        return VStack(spacing: 4) {
             Text(now.formatted(.dateTime.weekday(.wide).month(.abbreviated).day()))
                 .font(.subheadline).foregroundStyle(.white.opacity(0.75))
-            Image(systemName: "figure.walk")
-                .font(.system(size: 34, weight: .light))
-                .foregroundStyle(Color(red: 0.60, green: 0.95, blue: 0.86))
-                .padding(.top, 16)
-            Text(steps.map { $0.formatted(.number.precision(.fractionLength(0))) } ?? "—")
-                .font(.system(size: stepSize, weight: .thin, design: .rounded))
+            Text(today.map { $0.completed.formatted() } ?? "—")
+                .font(.system(size: interventionSize, weight: .bold, design: .rounded))
+                .foregroundStyle(.white)
                 .minimumScaleFactor(0.5).lineLimit(1)
                 .contentTransition(.numericText())
-            Text("steps today").font(.title3)
-            Text(steps == nil ? "Your next watch update will fill this in." : "A little movement adds up.")
-                .font(.subheadline).foregroundStyle(.white.opacity(0.75))
-            HStack(spacing: 6) {
-                Image(systemName: snapshot.monitoring ? "waveform.path" : "pause.fill")
-                Text(snapshot.monitoring ? "Watching for a good moment" : "Monitoring paused")
+            Text(today?.completed == 1 ? "break completed today" : "breaks completed today")
+                .font(.title3).multilineTextAlignment(.center)
+            if today == nil {
+                Text("Waiting for today’s watch update")
+                    .font(.caption).foregroundStyle(.white.opacity(0.65))
             }
-            .font(.caption.weight(.medium))
-            .padding(.horizontal, 13).padding(.vertical, 8)
-            .background(.white.opacity(0.10), in: Capsule())
-            .padding(.top, 10)
         }
         .frame(maxWidth: .infinity)
-        .padding(.top, 12).padding(.bottom, 14)
+        .padding(.vertical, spacing)
         .accessibilityElement(children: .combine)
     }
 
     private func invitation(_ prompt: CompanionSnapshot.Prompt) -> some View {
         Button { openPrompt(prompt.id) } label: {
-            card {
-                HStack(alignment: .center, spacing: 14) {
-                    Image(systemName: "figure.flexibility")
-                        .font(.system(size: 30, weight: .light))
-                        .foregroundStyle(Color(red: 0.63, green: 0.96, blue: 0.85))
-                    VStack(alignment: .leading, spacing: 5) {
-                        Text("A moment for you").font(.headline)
-                        Text("Three little ways to move. Choose on your watch.")
-                            .font(.subheadline).foregroundStyle(.white.opacity(0.8))
-                    }
-                    Spacer(minLength: 0)
-                    Image(systemName: "chevron.right").font(.caption.weight(.semibold)).foregroundStyle(.white.opacity(0.65))
-                }
-            }
-        }.buttonStyle(.plain)
+            Label("Choose a break on your watch", systemImage: "arrow.up.forward")
+                .font(.subheadline.weight(.medium))
+                .multilineTextAlignment(.center)
+                .padding(.vertical, 8)
+                .frame(minHeight: 44)
+        }.buttonStyle(.plain).foregroundStyle(.mint)
     }
 
-    private func weekCard(_ snapshot: CompanionSnapshot) -> some View {
-        let total = snapshot.days.reduce(0) { $0 + $1.completed }
+    private func weekCard(_ snapshot: CompanionSnapshot, height: CGFloat) -> some View {
         let maximum = max(snapshot.days.map(\.completed).max() ?? 0, 1)
-        return NavigationLink {
-            DailyDetailView(snapshot: snapshot)
-        } label: {
-            card {
-                VStack(alignment: .leading, spacing: 16) {
+        return Button { showingWeek = true } label: {
+            card(height: height) {
+                VStack(alignment: .leading, spacing: spacing) {
                     HStack {
-                        cardTitle("YOUR WEEK", symbol: "calendar")
+                        cardTitle("This week", symbol: "calendar")
                         Spacer()
                         Image(systemName: "chevron.right").font(.caption.weight(.semibold)).foregroundStyle(.white.opacity(0.6))
                     }
-                    Text(total == 1 ? "1 movement break" : "\(total) movement breaks")
-                        .font(.title3.weight(.medium))
-                    HStack(alignment: .bottom, spacing: 8) {
-                        ForEach(snapshot.days) { day in
-                            VStack(spacing: 10) {
-                                Text(day.completed.formatted()).font(.subheadline.weight(.medium).monospacedDigit())
-                                ZStack(alignment: .bottom) {
-                                    Capsule().fill(.white.opacity(0.07))
-                                    if day.completed > 0 {
-                                        Capsule().fill(LinearGradient(colors: [.mint, .cyan.opacity(0.6)], startPoint: .top, endPoint: .bottom))
-                                            .frame(height: max(8, 46 * Double(day.completed) / Double(maximum)))
-                                    }
-                                }.frame(width: 7, height: 46)
-                                Text(day.date.formatted(.dateTime.weekday(.narrow)))
-                                    .font(.caption).foregroundStyle(.white.opacity(0.75))
-                            }
-                            .frame(maxWidth: .infinity)
-                            .accessibilityElement(children: .ignore)
-                            .accessibilityLabel("\(day.date.formatted(.dateTime.weekday(.wide))): \(day.completed) completed breaks")
+                    if dynamicTypeSize.isAccessibilitySize {
+                        ScrollView(.horizontal) {
+                            weekBars(snapshot.days, maximum: maximum)
+                                .frame(minWidth: weekColumnWidth * 7)
                         }
-                    }
-                    if total == 0 {
-                        Text("Your first completed break starts the story.").font(.caption).foregroundStyle(.white.opacity(0.7))
+                    } else {
+                        weekBars(snapshot.days, maximum: maximum)
                     }
                 }
             }
-        }.buttonStyle(.plain)
+        }
+        .buttonStyle(.plain)
+        .accessibilityHint("Opens a chart where you can explore each day")
     }
 
-    private func metrics(_ snapshot: CompanionSnapshot, now: Date) -> some View {
-        let today = snapshot.days.last { Calendar.current.isDate($0.date, inSameDayAs: now) }
-        let checkedToday = snapshot.checkedAt.map { Calendar.current.isDate($0, inSameDayAs: now) } ?? false
-        let columns = dynamicTypeSize.isAccessibilitySize ? [GridItem(.flexible())] : [GridItem(.flexible()), GridItem(.flexible())]
-        return LazyVGrid(columns: columns, spacing: 14) {
-            metricCard("BREAKS", symbol: "figure.cooldown", value: today.map { String($0.completed) } ?? "—", unit: "today",
-                       detail: today.map { "\($0.low) low · \($0.moderate) moderate · \($0.high) high" } ?? "Waiting for today’s update", accent: .mint)
-            metricCard("EXERCISE", symbol: "timer", value: checkedToday ? number(snapshot.exerciseMinutes) : "—", unit: "minutes",
-                       detail: "Activity recorded today", accent: .cyan)
-            metricCard("HEART RATE", symbol: "heart.fill", value: number(snapshot.heartRate), unit: "bpm",
-                       detail: snapshot.heartRateAt.map { "Last reading \($0.formatted(date: Calendar.current.isDate($0, inSameDayAs: now) ? .omitted : .abbreviated, time: .shortened))" } ?? "No recent reading", accent: .pink)
-            metricCard("SLEEP", symbol: "moon.stars.fill", value: snapshot.sleepHours.map { $0.formatted(.number.precision(.fractionLength(1))) } ?? "—", unit: "hours",
-                       detail: "Last recorded 24-hour window", accent: Color(red: 0.76, green: 0.73, blue: 1))
+    private func weekBars(_ days: [CompanionSnapshot.Day], maximum: Int) -> some View {
+        HStack(spacing: 8) {
+            ForEach(days) { day in
+                VStack(spacing: 8) {
+                    Text(day.date.formatted(.dateTime.weekday(.narrow)))
+                        .font(.caption).foregroundStyle(.white.opacity(0.65))
+                    GeometryReader { geometry in
+                        ZStack(alignment: .bottom) {
+                            Capsule().fill(.white.opacity(0.07))
+                            if day.completed > 0 {
+                                Capsule()
+                                    .fill(LinearGradient(gradient: MovementPalette.completionGradient(day), startPoint: .bottom, endPoint: .top))
+                                    .frame(height: max(4, geometry.size.height * Double(day.completed) / Double(maximum)))
+                            }
+                        }
+                        .frame(width: 9, height: geometry.size.height)
+                        .frame(maxWidth: .infinity)
+                    }
+                    Text(day.completed.formatted()).font(.caption.weight(.semibold).monospacedDigit())
+                }
+                .frame(maxWidth: .infinity)
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel("\(day.date.formatted(.dateTime.weekday(.wide))): \(day.completed) completed breaks, \(day.low) low, \(day.moderate) moderate, \(day.high) high effort")
+            }
         }
     }
 
-    private func metricCard(_ title: String, symbol: String, value: String, unit: String, detail: String, accent: Color) -> some View {
-        card {
-            VStack(alignment: .leading, spacing: 12) {
-                cardTitle(title, symbol: symbol)
-                Image(systemName: symbol).font(.system(size: 25, weight: .light)).foregroundStyle(accent).accessibilityHidden(true)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(value).font(.system(.largeTitle, design: .rounded, weight: .regular)).contentTransition(.numericText())
-                    Text(unit).font(.subheadline).foregroundStyle(.white.opacity(0.8))
+    private func metrics(_ snapshot: CompanionSnapshot, now: Date) -> some View {
+        let checkedToday = snapshot.checkedAt.map { Calendar.current.isDate($0, inSameDayAs: now) } ?? false
+        let missed = snapshot.days.last { Calendar.current.isDate($0.date, inSameDayAs: now) }?.missed
+        let columns = dynamicTypeSize >= .xLarge ? [GridItem(.flexible(), spacing: spacing)] : [GridItem(.flexible(), spacing: spacing), GridItem(.flexible(), spacing: spacing)]
+        return LazyVGrid(columns: columns, spacing: spacing) {
+            Button { showingWeek = true } label: {
+                metricCard("Missed today", symbol: "clock.badge.xmark", value: missed.map { $0.formatted() } ?? "—", unit: nil,
+                           detail: missed == nil ? "Waiting for Watch sync" : "Dismissed or unanswered")
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(missed.map { "\($0) missed breaks today" } ?? "Missed breaks unavailable")
+            .accessibilityHint("Shows your daily counts and what counts as missed")
+            metricCard("Steps today", symbol: "figure.walk", value: checkedToday ? number(snapshot.steps) : "—", unit: nil,
+                       detail: readingFooter(snapshot.checkedAt, now: now))
+            metricCard("Exercise today", symbol: "timer", value: checkedToday ? number(snapshot.exerciseMinutes) : "—", unit: "min",
+                       detail: checkedToday && snapshot.exerciseMinutes != nil ? "Active minutes today" : "Waiting for a reading")
+            metricCard("Heart rate", symbol: "heart.fill", value: number(snapshot.heartRate), unit: "bpm",
+                       detail: readingFooter(snapshot.heartRateAt, now: now))
+        }
+    }
+
+    private func metricCard(_ title: String, symbol: String, value: String, unit: String?, detail: String) -> some View {
+        card(square: true) {
+            VStack(alignment: .leading, spacing: 0) {
+                cardTitle(title, symbol: symbol).padding(.bottom, 12)
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack(alignment: .firstTextBaseline, spacing: 4) {
+                        Text(value).font(.system(.largeTitle, design: .rounded, weight: .medium))
+                            .minimumScaleFactor(0.6).lineLimit(1).contentTransition(.numericText())
+                        if let unit {
+                            Text(unit).font(.subheadline).foregroundStyle(.white.opacity(0.65))
+                        }
+                    }
                 }
-                Text(detail).font(.caption).foregroundStyle(.white.opacity(0.7)).fixedSize(horizontal: false, vertical: true)
-                Spacer(minLength: 0)
-            }.frame(maxWidth: .infinity, minHeight: 175, alignment: .topLeading)
+                Spacer(minLength: 8)
+                Text(detail).font(.caption).foregroundStyle(.white.opacity(0.65))
+                    .fixedSize(horizontal: false, vertical: true)
+            }.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         }.accessibilityElement(children: .combine)
+    }
+
+    private func readingFooter(_ date: Date?, now: Date) -> String {
+        guard let date else { return "Waiting for a reading" }
+        if Calendar.current.isDate(date, inSameDayAs: now) {
+            return "Last check at \(date.formatted(date: .omitted, time: .shortened))"
+        }
+        return "Last check \(date.formatted(.dateTime.day().month(.abbreviated)))\n\(date.formatted(date: .omitted, time: .shortened))"
     }
 
     private func syncFooter(_ snapshot: CompanionSnapshot, now: Date) -> some View {
         VStack(spacing: 6) {
-            Label("From your Apple Watch", systemImage: "applewatch").font(.caption.weight(.medium))
-            if let checkedAt = snapshot.checkedAt {
-                Text("Updated \(checkedAt.formatted(date: Calendar.current.isDate(checkedAt, inSameDayAs: now) ? .omitted : .abbreviated, time: .shortened))")
-                    .font(.caption)
-                if now.timeIntervalSince(checkedAt) >= 30 * 60 {
-                    Text("These readings are a little older. Open the watch app to refresh.")
-                        .font(.caption).multilineTextAlignment(.center)
-                }
-            } else { Text("Waiting for the first activity check").font(.caption) }
+            Text(snapshot.monitoring ? "Reminders on" : "Reminders paused").font(.caption)
+            Text("Watch synced \(snapshot.generatedAt.formatted(date: Calendar.current.isDate(snapshot.generatedAt, inSameDayAs: now) ? .omitted : .abbreviated, time: .shortened))")
+                .font(.caption)
+            if let checkedAt = snapshot.checkedAt, now.timeIntervalSince(checkedAt) >= 30 * 60 {
+                Text("Older activity readings · Open your watch to refresh")
+                    .font(.caption).multilineTextAlignment(.center)
+            } else if snapshot.checkedAt == nil {
+                Text("Waiting for an activity reading").font(.caption)
+            }
         }
         .foregroundStyle(.white.opacity(0.65))
         .padding(.top, 6)
@@ -213,32 +263,92 @@ struct PhoneTodayView: View {
             VStack(spacing: 14) {
                 Image(systemName: "applewatch").font(.system(size: 72, weight: .ultraLight)).foregroundStyle(.mint)
                 Text("A little movement.\nA brighter day.").font(.largeTitle.weight(.light)).multilineTextAlignment(.center)
-                Text("Your day, at a glance — right here.").font(.subheadline).foregroundStyle(.white.opacity(0.75))
             }.padding(.vertical, 38)
             card {
                 VStack(alignment: .leading, spacing: 18) {
                     Text("Let’s connect your watch").font(.title3.weight(.semibold))
-                    Text("Open Move Moment on your Apple Watch and finish setup. Your activity will appear here after the first sync.")
+                    Text("Open Move Moment on your Apple Watch to get started.")
                         .font(.subheadline).foregroundStyle(.white.opacity(0.8))
                     Button("Connect with my watch", systemImage: "arrow.clockwise") { model.refresh(); showingSync = true }
                         .buttonStyle(.borderedProminent).tint(.mint).foregroundStyle(Color(red: 0.04, green: 0.15, blue: 0.22))
-                    Button("Permissions & preferences", action: openPreferences).font(.subheadline).tint(.white)
+                    Button("Settings", action: openSettings).font(.subheadline).tint(MovementPalette.low)
                 }
             }
         }
     }
 
     private func cardTitle(_ title: String, symbol: String) -> some View {
-        Label(title, systemImage: symbol).font(.caption.weight(.semibold)).foregroundStyle(.white.opacity(0.7))
+        Label(title.uppercased(), systemImage: symbol)
+            .font(.caption2.weight(.semibold))
+            .foregroundStyle(.white.opacity(0.65))
+            .accessibilityLabel(title)
     }
 
-    private func card<Content: View>(@ViewBuilder content: () -> Content) -> some View {
-        content()
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(18)
-            .background(reduceTransparency ? Color(red: 0.10, green: 0.23, blue: 0.33) : .white.opacity(0.075), in: RoundedRectangle(cornerRadius: 24))
-            .overlay { RoundedRectangle(cornerRadius: 24).strokeBorder(.white.opacity(0.10), lineWidth: 0.5) }
+    private func card<Content: View>(square: Bool = false, height: CGFloat? = nil, @ViewBuilder content: () -> Content) -> some View {
+        Group {
+            if square {
+                Color.clear
+                    .aspectRatio(1, contentMode: .fit)
+                    .overlay { content().padding(spacing) }
+            } else if let height {
+                Color.clear.frame(height: height)
+                    .overlay { content().padding(spacing) }
+            } else {
+                content()
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(spacing)
+            }
+        }
+        .background(Color(white: reduceTransparency ? 0.09 : 0.055))
+        .clipShape(RoundedRectangle(cornerRadius: 24))
+        .overlay { RoundedRectangle(cornerRadius: 24).strokeBorder(.white.opacity(0.08), lineWidth: 0.5) }
     }
 
     private func number(_ value: Double?) -> String { value.map { $0.formatted(.number.precision(.fractionLength(0))) } ?? "—" }
 }
+
+#if DEBUG
+#Preview("Today · Connected") {
+    NavigationStack { PhoneTodayView(model: .preview(snapshot: PhoneModel.previewSnapshot()), openSettings: {}, openPrompt: { _ in }) }
+}
+
+#Preview("Today · Welcome") {
+    PhoneContentView(model: .preview())
+        .defaultAppStorage(UserDefaults(suiteName: "MoveMoment.PhonePreviews")!)
+}
+
+#Preview("Today · Stale readings") {
+    NavigationStack { PhoneTodayView(model: .preview(snapshot: PhoneModel.previewSnapshot(stale: true)), openSettings: {}, openPrompt: { _ in }) }
+}
+
+#Preview("Today · No interventions yet") {
+    NavigationStack { PhoneTodayView(model: .preview(snapshot: PhoneModel.previewSnapshot(emptyDay: true)), openSettings: {}, openPrompt: { _ in }) }
+}
+
+#Preview("Today · Moderate effort selected") {
+    NavigationStack { PhoneTodayView(model: .preview(snapshot: PhoneModel.previewSnapshot(selectedEffort: "moderate")), openSettings: {}, openPrompt: { _ in }) }
+}
+
+#Preview("Today · High effort selected") {
+    NavigationStack { PhoneTodayView(model: .preview(snapshot: PhoneModel.previewSnapshot(selectedEffort: "challenge")), openSettings: {}, openPrompt: { _ in }) }
+}
+
+#Preview("Today · Narrow layout") {
+    NavigationStack { PhoneTodayView(model: .preview(snapshot: PhoneModel.previewSnapshot()), openSettings: {}, openPrompt: { _ in }) }
+        .frame(width: 320)
+}
+
+#Preview("Today · Missing signals & paused") {
+    NavigationStack { PhoneTodayView(model: .preview(snapshot: PhoneModel.previewSnapshot(missingSignals: true)), openSettings: {}, openPrompt: { _ in }) }
+}
+
+#Preview("Today · Accessibility text") {
+    NavigationStack { PhoneTodayView(model: .preview(snapshot: PhoneModel.previewSnapshot()), openSettings: {}, openPrompt: { _ in }) }
+        .environment(\.dynamicTypeSize, .accessibility3)
+}
+
+#Preview("Today · Dark mode") {
+    NavigationStack { PhoneTodayView(model: .preview(snapshot: PhoneModel.previewSnapshot()), openSettings: {}, openPrompt: { _ in }) }
+        .preferredColorScheme(.dark)
+}
+#endif

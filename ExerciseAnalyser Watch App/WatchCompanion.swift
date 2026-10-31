@@ -13,7 +13,9 @@ extension AppModel {
             }
             let recordedSteps = context?.stepHistory?.last { calendar.isDate($0.date, inSameDayAs: day) }?.value
             let currentSteps = context.flatMap { calendar.isDate($0.date, inSameDayAs: day) ? $0.stepsToday : nil }
-            return .init(date: day, steps: currentSteps ?? recordedSteps, low: count(.easy), moderate: count(.moderate), high: count(.challenge))
+            return .init(date: day, steps: currentSteps ?? recordedSteps, low: count(.easy), moderate: count(.moderate), high: count(.challenge),
+                         missed: CompanionSummary.missedCount(in: state.prompts, on: day, asOf: now, calendar: calendar),
+                         selections: CompanionSummary.selectionCounts(in: state.prompts, on: day, asOf: now, calendar: calendar))
         }
         let prompts: [CompanionSnapshot.Prompt] = state.prompts.suffix(30).reversed().map { prompt in
             .init(id: prompt.id, date: prompt.createdAt,

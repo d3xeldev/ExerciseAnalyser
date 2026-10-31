@@ -12,12 +12,12 @@ final class PhoneModel {
     private(set) var connectionStatus = "Connecting to Apple Watch…"
     private(set) var notificationStatus = "Not checked"
     private(set) var soundStatus = "Not checked"
-    private(set) var notificationActivity = "No phone reminder requests yet."
-    private(set) var exportStatus = "Request the complete study files from your watch."
+    private(set) var notificationActivity = "No reminder activity yet."
+    private(set) var exportStatus = "Prepare a copy of your data from your Watch."
     private(set) var exportURLs: [URL] = []
     var openedPromptID: UUID?
     var error: String?
-    @ObservationIgnored let notifications = PhoneNotifications()
+    @ObservationIgnored lazy var notifications = PhoneNotifications()
     @ObservationIgnored private let connection = CompanionConnection.shared
     @ObservationIgnored private var latestExportBatch: String?
 
@@ -25,7 +25,11 @@ final class PhoneModel {
         FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("Companion")
     }
 
-    private init() {
+    let isPreview: Bool
+
+    private init(isPreview: Bool = ProcessInfo.processInfo.environment["XCODE_RUNNING_FOR_PREVIEWS"] == "1") {
+        self.isPreview = isPreview
+        if isPreview { return }
         UserDefaults.standard.register(defaults: ["phone.reminders": true, "phone.sound": true, "phone.haptics": true])
         if let data = try? Data(contentsOf: directory.appendingPathComponent("snapshot.json")),
            let cached = try? JSONDecoder().decode(CompanionSnapshot.self, from: data), cached.schemaVersion == 1 {
@@ -42,7 +46,7 @@ final class PhoneModel {
             if files.allSatisfy({ FileManager.default.fileExists(atPath: $0.path) }) {
                 exportURLs = files
                 latestExportBatch = batch
-                exportStatus = "Last export: \(saved["received"] ?? "previous session"). Watch participant: \(participant)."
+                exportStatus = "Your last files are ready to share · \(saved["received"] ?? "previous session")"
             }
         }
         notifications.onOpen = { [weak self] in self?.openedPromptID = $0 }
@@ -72,35 +76,40 @@ final class PhoneModel {
     }
 
     func foreground() async {
+        guard !isPreview else { return }
         await refreshPermissions()
     }
 
     func refreshPermissions() async {
+        guard !isPreview else { return }
         let settings = await notifications.settings()
         notificationStatus = switch settings.authorizationStatus {
-        case .notDetermined: "Not requested"
+        case .notDetermined: "Not set up"
         case .denied: "Off — enable in Settings"
-        case .authorized: settings.alertSetting == .enabled ? "Authorized" : "Alerts disabled in Settings"
+        case .authorized: settings.alertSetting == .enabled ? "On" : "Off in Settings"
         case .provisional: "Quiet delivery"
         case .ephemeral: "Temporary access"
         @unknown default: "Unknown"
         }
-        soundStatus = settings.soundSetting == .enabled ? "Allowed by iOS" : "Disabled in Settings"
+        soundStatus = settings.soundSetting == .enabled ? "On" : "Disabled in Settings"
     }
 
     func requestNotifications() async {
+        guard !isPreview else { return }
         do { try await notifications.requestAccess(); await refreshPermissions() }
         catch { self.error = error.localizedDescription }
     }
 
-    func refresh() { connection.send(.requestSnapshot) }
+    func refresh() { if !isPreview { connection.send(.requestSnapshot) } }
 
     func requestExport() {
-        exportStatus = "Requested. Keep the devices nearby; the watch will transfer three files when available."
+        guard !isPreview else { return }
+        exportStatus = "Getting your files from your Watch. Keep your devices nearby."
         connection.send(.requestExport)
     }
 
     func previewAlert() {
+        guard !isPreview else { return }
         guard !previewingAlert else { return }
         previewingAlert = true
         Task {
@@ -111,6 +120,7 @@ final class PhoneModel {
     }
 
     func openSettings() {
+        guard !isPreview else { return }
         if let url = URL(string: UIApplication.openSettingsURLString) { UIApplication.shared.open(url) }
     }
 
@@ -171,11 +181,67 @@ final class PhoneModel {
                 exportURLs = completeFiles
                 latestExportBatch = batch
                 let received = Date().formatted(date: .abbreviated, time: .shortened)
-                exportStatus = "Complete export received at \(received). Watch participant: \(participant)."
+                exportStatus = "Your files are ready to share · \(received)"
                 UserDefaults.standard.set(["participant": participant, "batch": batch, "received": received], forKey: "phone.latestExport")
             } else if latestExportBatch != batch {
-                exportStatus = "Receiving study files (\(files.count) of 3)…"
+                exportStatus = "Getting your files (\(files.count) of 3)…"
             }
         } catch { self.error = "Could not save the research export: \(error.localizedDescription)" }
     }
 }
+
+#if DEBUG
+extension PhoneModel {
+    static func preview(snapshot: CompanionSnapshot? = nil) -> PhoneModel {
+        let model = PhoneModel(isPreview: true)
+        model.snapshot = snapshot
+        model.connectionStatus = snapshot == nil ? "Waiting for Apple Watch" : "Apple Watch connected"
+        model.notificationStatus = snapshot == nil ? "Not set up" : "On"
+        model.soundStatus = snapshot == nil ? "Not checked" : "On"
+        return model
+    }
+
+    // Relative dates keep Today and active invitations useful whenever the canvas opens.
+    static func previewSnapshot(stale: Bool = false, missingSignals: Bool = false, emptyDay: Bool = false, selectedEffort: String = "easy") -> CompanionSnapshot {
+        let now = Date()
+        let checked = stale ? now.addingTimeInterval(-86400) : now
+        let options: [CompanionSnapshot.Option] = [
+            .init(id: "shoulders", title: "Shoulder reset", effort: "Low", minutes: 1, symbol: "figure.flexibility", instructions: "Slowly roll your shoulders, then gently reach overhead. Keep the movement comfortable."),
+            .init(id: "walk", title: "Walking break", effort: "Moderate", minutes: 3, symbol: "figure.walk", instructions: "Take a steady walk at a comfortable pace. Choose a clear route and ease off whenever you need."),
+            .init(id: "brisk", title: "Brisk walk", effort: "High", minutes: 5, symbol: "figure.walk", instructions: "Walk a little faster than usual on a safe, level route. Keep a pace where you can still speak comfortably.")
+        ]
+        return CompanionSnapshot(
+            generatedAt: checked, participantID: UUID(uuidString: "00000000-0000-0000-0000-000000000001")!,
+            dataAvailable: true, monitoring: !missingSignals, checkedAt: checked, status: "Space for a movement break",
+            steps: missingSignals ? nil : 6248, heartRate: missingSignals ? nil : 72,
+            heartRateAt: missingSignals ? nil : checked, exerciseMinutes: missingSignals ? nil : 24,
+            sleepHours: missingSignals ? nil : 7.4,
+            days: (-6...0).map { offset in
+                .init(date: Calendar.current.date(byAdding: .day, value: offset, to: checked)!,
+                      steps: missingSignals || offset == -3 ? nil : Double(6248 + offset * 570),
+                      low: missingSignals || emptyDay ? 0 : (offset + 7) % 3, moderate: missingSignals || emptyDay ? 0 : 1,
+                      high: missingSignals || emptyDay ? 0 : (offset + 6) % 2, missed: emptyDay ? 0 : (offset + 8) % 3,
+                      selections: .init(low: emptyDay ? 0 : (selectedEffort == "easy" ? 3 : 1),
+                                        moderate: emptyDay ? 0 : (selectedEffort == "moderate" ? 3 : 1),
+                                        high: emptyDay ? 0 : (selectedEffort == "challenge" ? 3 : 1)))
+            },
+            prompts: [
+                .init(id: UUID(), date: now.addingTimeInterval(-120), outcome: "Scheduled", method: "Personalized", isManual: false,
+                      options: options, selectedTitle: nil, expiresAt: now.addingTimeInterval(600)),
+                .init(id: UUID(), date: now.addingTimeInterval(-7200), outcome: "Completed", method: "Discover your favorites", isManual: true,
+                      options: options, selectedTitle: "Walking break", expiresAt: now.addingTimeInterval(-6600))
+            ],
+            events: [
+                .init(id: UUID(), date: now.addingTimeInterval(-120), kind: "notification_scheduled", source: "planner"),
+                .init(id: UUID(), date: now.addingTimeInterval(-7200), kind: "exercise_completed", source: "app")
+            ],
+            permissions: [.init(title: "Health", value: "Authorization flow completed"), .init(title: "Calendar", value: "Full access"),
+                          .init(title: "Motion", value: "Authorized"), .init(title: "Notifications", value: "Enabled")],
+            preferences: [.init(title: "Active hours", value: "09:00–21:00"), .init(title: "Inactivity", value: "30 minutes"),
+                          .init(title: "Cooldown", value: "60 minutes"), .init(title: "Daily limit", value: "6")],
+            issues: missingSignals ? ["Health readings unavailable. Missing data is not zero."] : [],
+            totalPrompts: 32, requestedNotifications: 28, completedBreaks: 19
+        )
+    }
+}
+#endif

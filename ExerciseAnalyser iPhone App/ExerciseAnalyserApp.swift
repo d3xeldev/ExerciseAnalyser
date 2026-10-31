@@ -16,7 +16,7 @@ struct ExerciseAnalyserPhoneApp: App {
     var body: some Scene {
         WindowGroup {
             PhoneContentView(model: PhoneModel.shared)
-                .tint(.teal)
+                .tint(MovementPalette.low)
                 .task { await PhoneModel.shared.foreground() }
                 .onChange(of: scenePhase) { _, phase in
                     if phase == .active { Task { await PhoneModel.shared.foreground() } }

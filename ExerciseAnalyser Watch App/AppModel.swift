@@ -33,7 +33,7 @@ final class AppModel {
     @ObservationIgnored private var store: StudyStore?
     @ObservationIgnored private let emptyState = StudyState()
     @ObservationIgnored private let services = ContextService()
-    @ObservationIgnored private let notifications = NotificationService()
+    @ObservationIgnored private lazy var notifications = NotificationService()
     @ObservationIgnored private var calendarObserver: NSObjectProtocol?
     @ObservationIgnored private var pendingRefresh: RefreshRequest?
     @ObservationIgnored private var lastRefreshSubmission: Date?
@@ -45,8 +45,11 @@ final class AppModel {
     @ObservationIgnored private var lastComplicationError: String?
     @ObservationIgnored private let sessionID = UUID()
 
-    var state: StudyState { _ = revision; return store?.state ?? emptyState }
-    var dataAvailable: Bool { store != nil }
+    let isPreview: Bool
+    private var previewState: StudyState?
+
+    var state: StudyState { _ = revision; return previewState ?? store?.state ?? emptyState }
+    var dataAvailable: Bool { previewState != nil || store != nil }
     var settings: Settings { state.settings }
     var currentPrompt: ExercisePrompt? {
         state.prompts.last { $0.isAvailable(at: Date()) }
@@ -65,7 +68,9 @@ final class AppModel {
         }
     }
 
-    private init() {
+    private init(isPreview: Bool = ProcessInfo.processInfo.environment["XCODE_RUNNING_FOR_PREVIEWS"] == "1") {
+        self.isPreview = isPreview
+        if isPreview { return }
         do {
             let directory = try FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
             store = try StudyStore(url: directory.appendingPathComponent("Study/study.json"))
@@ -157,6 +162,13 @@ final class AppModel {
     }
 
     func updateSettings(_ change: (inout Settings) -> Void) {
+        if isPreview {
+            if var state = previewState {
+                change(&state.settings)
+                previewState = state
+            }
+            return
+        }
         var updated = settings
         change(&updated)
         let calendarSelectionChanged = updated.selectedCalendarIDs != settings.selectedCalendarIDs
@@ -188,6 +200,7 @@ final class AppModel {
     }
 
     func requestHealth() async {
+        guard !isPreview else { return }
         guard !requestingAccess, !healthConfigured else { return }
         requestingAccess = true
         defer { requestingAccess = false }
@@ -206,6 +219,7 @@ final class AppModel {
     }
 
     func requestCalendar() async {
+        guard !isPreview else { return }
         guard !requestingAccess, !calendarAccess else { return }
         requestingAccess = true
         defer { requestingAccess = false }
@@ -215,7 +229,7 @@ final class AppModel {
             calendarAccess = EKEventStore.authorizationStatus(for: .event) == .fullAccess
             availableCalendars = services.calendar.availableCalendars
             record(.init(date: Date(), kind: "permission_result", source: "calendar", detail: allowed ? "full_access" : "not_granted"))
-            message = calendarAccess ? "Calendar enabled. Choose calendars in Preferences." : "Calendar permission was not granted."
+            message = calendarAccess ? "Calendar enabled. Choose calendars in Settings." : "Calendar permission was not granted."
             await evaluate(source: "calendar_permission_changed")
         } catch {
             record(.init(date: Date(), kind: "permission_error", source: "calendar", detail: error.localizedDescription))
@@ -224,6 +238,7 @@ final class AppModel {
     }
 
     func requestMotion() async {
+        guard !isPreview else { return }
         guard !requestingAccess, !motionAccess else { return }
         requestingAccess = true
         defer { requestingAccess = false }
@@ -242,6 +257,7 @@ final class AppModel {
     }
 
     func requestNotifications() async {
+        guard !isPreview else { return }
         guard !requestingAccess, !notificationAccess else { return }
         requestingAccess = true
         defer { requestingAccess = false }
@@ -259,6 +275,7 @@ final class AppModel {
     }
 
     func refreshAccessStatus() async {
+        guard !isPreview else { return }
         availableCalendars = services.calendar.availableCalendars
         calendarAccess = EKEventStore.authorizationStatus(for: .event) == .fullAccess
         motionAccess = CMMotionActivityManager.authorizationStatus() == .authorized
@@ -286,6 +303,7 @@ final class AppModel {
     }
 
     func foreground() async {
+        guard !isPreview else { return }
         guard WKApplication.shared().applicationState == .active else { return }
         record(.init(date: Date(), kind: "foreground_entered", source: "lifecycle"))
         scheduleRefresh(recover: true)
@@ -299,11 +317,13 @@ final class AppModel {
     }
 
     func enteredBackground() {
+        guard !isPreview else { return }
         record(.init(date: Date(), kind: "background_entered", source: "lifecycle"))
         scheduleRefresh(recover: true)
     }
 
     func backgroundExpired(reason: String = "watchOS_expiration") {
+        guard !isPreview else { return }
         evaluationTask?.cancel()
         evaluationCompletion?.finish()
         pendingTriggers.removeAll()
@@ -331,6 +351,7 @@ final class AppModel {
     }
 
     func evaluate(source: String, attributes: [String: String] = [:]) async {
+        guard !isPreview else { return }
         guard dataAvailable, settings.monitoring else { publishComplications(); return }
         scheduleRefresh()
         if let started = evaluationStartedAt, Date().timeIntervalSince(started) >= 12 {
@@ -520,6 +541,7 @@ final class AppModel {
     }
 
     func triggerManualIntervention() async -> UUID? {
+        guard !isPreview else { return currentPrompt?.id }
         requestedEffortSelection = false
         if let prompt = activePrompt {
             return prompt.id
@@ -555,6 +577,7 @@ final class AppModel {
     }
 
     func choose(promptID: UUID, exerciseID: String?, source: String = "app", at date: Date = Date()) {
+        guard !isPreview else { return }
         requestedEffortSelection = false
         defer { publishComplications(); scheduleRefresh() }
         guard let store else { return }
@@ -662,6 +685,7 @@ final class AppModel {
     }
 
     func startExercise(_ promptID: UUID) {
+        guard !isPreview else { return }
         guard let prompt = activePrompt, prompt.id == promptID,
               let exercise = prompt.options.first(where: { $0.id == prompt.selectedExerciseID })?.exercise else { return }
         var session = prompt.exerciseSession ?? ExerciseSession()
@@ -687,6 +711,7 @@ final class AppModel {
     }
 
     func expireInvitations() {
+        guard !isPreview else { return }
         guard let store else { return }
         let now = Date()
         guard state.prompts.contains(where: {
@@ -704,6 +729,7 @@ final class AppModel {
     }
 
     func leaveInvitation(_ id: UUID) -> Bool {
+        guard !isPreview else { return true }
         guard let store else { return false }
         do {
             let leavingActiveExercise = activePrompt?.id == id
@@ -724,6 +750,7 @@ final class AppModel {
     }
 
     func pauseExercise(_ promptID: UUID) async {
+        guard !isPreview else { return }
         await tickExercise()
         guard let prompt = activePrompt, prompt.id == promptID, var session = prompt.exerciseSession,
               session.runningSince != nil, session.endedAt == nil else { return }
@@ -747,6 +774,7 @@ final class AppModel {
     }
 
     func tickExercise() async {
+        guard !isPreview else { return }
         guard !assessingExercise, let prompt = activePrompt,
               let exercise = prompt.options.first(where: { $0.id == prompt.selectedExerciseID })?.exercise,
               var session = prompt.exerciseSession else { return }
@@ -772,6 +800,7 @@ final class AppModel {
     }
 
     func finish(_ prompt: ExercisePrompt, completed: Bool) {
+        guard !isPreview else { return }
         defer { publishComplications(); scheduleRefresh() }
         do {
             guard let store else { return }
@@ -793,6 +822,7 @@ final class AppModel {
     }
 
     func prepareExport() {
+        guard !isPreview else { return }
         do {
             record(.init(date: Date(), kind: "export_prepared", source: "app", detail: "Local files prepared; this does not mean they were shared."))
             exportURLs = try store?.export(to: FileManager.default.temporaryDirectory.appendingPathComponent("StudyExport")) ?? []
@@ -826,6 +856,7 @@ final class AppModel {
     }
 
     func scheduleRefresh(recover: Bool = false) {
+        guard !isPreview else { return }
         let now = Date()
         guard dataAvailable, let plan = BackgroundRefreshPolicy.plan(at: now, settings: settings, context: context, prompts: state.prompts) else { return }
         let request: RefreshRequest
@@ -862,6 +893,7 @@ final class AppModel {
     }
 
     func backgroundRefresh(userInfo: (any NSSecureCoding)?) async {
+        guard !isPreview else { return }
         let started = Date()
         var attributes = userInfo as? [String: String] ?? [:]
         if let value = attributes["preferredDate"], let date = try? Date.ISO8601FormatStyle().parse(value) {
@@ -932,6 +964,7 @@ final class AppModel {
     }
 
     func complicationOpened(_ kind: ComplicationKind) {
+        guard !isPreview else { return }
         record(.init(date: Date(), kind: "complication_opened", source: "widgetkit", attributes: ["kind": kind.rawValue]))
     }
 }
@@ -1005,3 +1038,20 @@ private final class BackgroundRefreshExecution {
         work = nil
     }
 }
+
+#if DEBUG
+extension AppModel {
+    // Fixtures never open the study store, register observers, or start connectivity.
+    static func preview(state: StudyState = StudyState(), context: ContextSnapshot? = nil) -> AppModel {
+        let model = AppModel(isPreview: true)
+        model.previewState = state
+        model.context = context
+        model.decision = state.prompts.last?.decision
+        model.notificationAccess = context != nil
+        model.calendarAccess = context != nil
+        model.motionAccess = context != nil
+        model.healthConfigured = context != nil
+        return model
+    }
+}
+#endif

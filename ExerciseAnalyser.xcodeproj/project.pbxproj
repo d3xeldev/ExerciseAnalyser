@@ -9,7 +9,7 @@
 /* Begin PBXBuildFile section */
 		433E5E3A307F86870027E89B /* AppIcon.icon in Resources */ = {isa = PBXBuildFile; fileRef = 433E5E39307F86870027E89B /* AppIcon.icon */; };
 		43DBB762307A3E9300F24E6C /* ExerciseAnalyser Watch App.app in Embed Watch Content */ = {isa = PBXBuildFile; fileRef = 43DBB761307A3E9300F24E6C /* ExerciseAnalyser Watch App.app */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
-		A10000000000000000000001 /* MoveMoment Complications.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = A10000000000000000000002 /* MoveMoment Complications.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		A10000000000000000000001 /* MoveMoment Complications.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = A10000000000000000000002 /* MoveMoment Complications.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		A10000000000000000000003 /* ComplicationSnapshot.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000004 /* ComplicationSnapshot.swift */; };
 		A20000000000000000000001 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000002 /* Assets.xcassets */; };
 		B10000000000000000000001 /* CompanionData.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000002 /* CompanionData.swift */; };
@@ -43,14 +43,14 @@
 			);
 			name = "Embed Watch Content";
 		};
-		A10000000000000000000009 /* Embed App Extensions */ = {
+		A10000000000000000000009 /* Embed Foundation Extensions */ = {
 			isa = PBXCopyFilesBuildPhase;
 			dstPath = "";
 			dstSubfolder = PlugIns;
 			files = (
-				A10000000000000000000001 /* MoveMoment Complications.appex in Embed App Extensions */,
+				A10000000000000000000001 /* MoveMoment Complications.appex in Embed Foundation Extensions */,
 			);
-			name = "Embed App Extensions";
+			name = "Embed Foundation Extensions";
 		};
 /* End PBXCopyFilesBuildPhase section */
 
@@ -164,7 +164,7 @@
 				43DBB75D307A3E9300F24E6C /* Sources */,
 				43DBB75E307A3E9300F24E6C /* Frameworks */,
 				43DBB75F307A3E9300F24E6C /* Resources */,
-				A10000000000000000000009 /* Embed App Extensions */,
+				A10000000000000000000009 /* Embed Foundation Extensions */,
 			);
 			buildRules = (
 			);
@@ -206,7 +206,7 @@
 			attributes = {
 				BuildIndependentTargetsInParallel = 1;
 				LastSwiftUpdateCheck = 2700;
-				LastUpgradeCheck = 2700;
+				LastUpgradeCheck = 2710;
 				TargetAttributes = {
 					43DBB75A307A3E9300F24E6C = {
 						CreatedOnToolsVersion = 27.0;
@@ -326,6 +326,7 @@
 				CLANG_WARN_UNREACHABLE_CODE = YES;
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				COPY_PHASE_STRIP = NO;
+				DEAD_CODE_STRIPPING = YES;
 				DEBUG_INFORMATION_FORMAT = dwarf;
 				DEVELOPMENT_TEAM = 3DGR463ZY2;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
@@ -388,6 +389,7 @@
 				CLANG_WARN_UNREACHABLE_CODE = YES;
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				COPY_PHASE_STRIP = NO;
+				DEAD_CODE_STRIPPING = YES;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
 				DEVELOPMENT_TEAM = 3DGR463ZY2;
 				ENABLE_NS_ASSERTIONS = NO;

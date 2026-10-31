@@ -1,17 +1,23 @@
 import SwiftUI
-import Charts
 
 struct PhoneContentView: View {
     @Bindable var model: PhoneModel
     @State private var tab = 0
     @State private var showingReminder = false
 
+    init(model: PhoneModel, initialTab: Int = 0) {
+        self.model = model
+        _tab = State(initialValue: initialTab)
+    }
+
     var body: some View {
         TabView(selection: $tab) {
             NavigationStack { today }.tabItem { Label("Today", systemImage: "figure.walk") }.tag(0)
             NavigationStack { research }.tabItem { Label("Research", systemImage: "chart.bar.xaxis") }.tag(1)
-            NavigationStack { PhonePreferencesView(model: model) }.tabItem { Label("Preferences", systemImage: "slider.horizontal.3") }.tag(2)
+            NavigationStack { PhoneSettingsView(model: model) }.tabItem { Label("Settings", systemImage: "slider.horizontal.3") }.tag(2)
         }
+        .tint(MovementPalette.low)
+        .defaultAppStorage(model.isPreview ? UserDefaults(suiteName: "MoveMoment.PhonePreviews")! : .standard)
         .alert("Move Moment", isPresented: Binding(get: { model.error != nil }, set: { if !$0 { model.error = nil } })) {
             Button("OK", role: .cancel) { model.error = nil }
         } message: { Text(model.error ?? "") }
@@ -34,63 +40,94 @@ struct PhoneContentView: View {
     }
 
     private var today: some View {
-        PhoneTodayView(model: model, openPreferences: { tab = 2 }, openPrompt: { model.openedPromptID = $0 })
+        PhoneTodayView(model: model, openSettings: { tab = 2 }, openPrompt: { model.openedPromptID = $0 })
     }
 
     private var research: some View {
         List {
             if let snapshot = model.snapshot, snapshot.dataAvailable {
-                Section("Study overview · all recorded data") {
-                    LabeledContent("Invitations", value: String(snapshot.totalPrompts))
-                    LabeledContent("Invitations with watch requests", value: String(snapshot.requestedNotifications))
-                    LabeledContent("Self-reported completed breaks", value: String(snapshot.completedBreaks))
-                    Text("A notification request is not proof of delivery or exposure. Manual invitations and self-reported completion remain distinct in the export.")
-                        .font(.caption).foregroundStyle(.secondary)
+                Section {
+                    LabeledContent("Breaks you completed", value: snapshot.completedBreaks.formatted())
+                    LabeledContent("Invitations", value: snapshot.totalPrompts.formatted())
+                } header: { Text("Your study so far") } footer: {
+                    Text(MovementCopy.completionNote)
                 }
-                Section("Recent invitations · latest 30") {
-                    if snapshot.prompts.isEmpty { Text("No invitations recorded yet.").foregroundStyle(.secondary) }
+                Section("Your recent breaks") {
+                    if snapshot.prompts.isEmpty { Text("Your first break will appear here.").foregroundStyle(.secondary) }
                     ForEach(snapshot.prompts) { prompt in
                         NavigationLink { PromptDetailView(prompt: prompt) } label: {
                             VStack(alignment: .leading, spacing: 5) {
-                                HStack { Text(prompt.selectedTitle ?? "Movement invitation").font(.headline); Spacer(); Text(prompt.outcome).font(.caption).foregroundStyle(.secondary) }
-                                Text(prompt.date.formatted(date: .abbreviated, time: .shortened)).font(.subheadline).foregroundStyle(.secondary)
-                                Text(prompt.isManual ? "Manual intervention" : prompt.method).font(.caption).foregroundStyle(.teal)
+                                Text(prompt.selectedTitle ?? "Movement invitation").font(.headline)
+                                Text("\(MovementCopy.outcome(prompt.outcome)) · \(prompt.date.formatted(date: .abbreviated, time: .shortened))")
+                                    .font(.subheadline).foregroundStyle(.secondary)
                             }.padding(.vertical, 4)
                         }
                     }
                 }
-                Section("Signal quality") {
-                    LabeledContent("Last recorded sleep", value: snapshot.sleepHours.map { String(format: "%.1f hours", $0) } ?? "Unavailable")
-                    if snapshot.issues.isEmpty { Text("No signal issues reported in the last summary.").foregroundStyle(.secondary) }
-                    ForEach(Array(snapshot.issues.enumerated()), id: \.offset) { _, issue in Text(issue).font(.subheadline) }
+                Section("Share with your researcher") {
+                    exportActions
                 }
-                Section("Recent watch events · latest 40") {
-                    ForEach(snapshot.events) { event in
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text(event.kind.replacingOccurrences(of: "_", with: " ").capitalized)
-                            Text("\(event.date.formatted(date: .abbreviated, time: .shortened)) · \(event.source)").font(.caption).foregroundStyle(.secondary)
-                        }
+                Section("About your data") {
+                    NavigationLink {
+                        PhoneWatchActivityView(snapshot: snapshot, notificationActivity: model.notificationActivity)
+                    } label: {
+                        Label("Watch activity", systemImage: "applewatch")
                     }
-                }
-                Section("Study identity") {
-                    Text(snapshot.participantID.uuidString).font(.caption.monospaced()).textSelection(.enabled)
-                    Text("Installation identifier from the watch. No account or server is used.").font(.caption).foregroundStyle(.secondary)
+                    DisclosureGroup("Your study ID") {
+                        Text(snapshot.participantID.uuidString).font(.caption.monospaced()).textSelection(.enabled)
+                        Text("Use this ID if your researcher asks you to identify your records.").font(.footnote).foregroundStyle(.secondary)
+                    }
+                    Text(MovementCopy.privacy).font(.footnote).foregroundStyle(.secondary)
                 }
             } else {
-                Section { Text("Research activity appears after the first watch sync.").foregroundStyle(.secondary) }
-            }
-            Section("Research export") {
-                Button("Request complete export", systemImage: "square.and.arrow.down") { model.requestExport() }
-                Text(model.exportStatus).font(.footnote).foregroundStyle(.secondary)
-                if !model.exportURLs.isEmpty {
-                    ShareLink(items: model.exportURLs) { Label("Share last received export", systemImage: "square.and.arrow.up") }
+                Section {
+                    ContentUnavailableView("Your study starts here", systemImage: "chart.bar.xaxis",
+                        description: Text("Open Move Moment on your Watch. Your breaks will appear here after it syncs."))
                 }
-                Text("Includes the study JSON, exercise-choice CSV, event journal, and phone notification activity when available. Files contain sensitive health and study data; choose a trusted destination. Preparing or sharing files does not confirm receipt by a researcher.")
-                    .font(.caption).foregroundStyle(.secondary)
+                Section("Share with your researcher") { exportActions }
             }
         }.navigationTitle("Research")
     }
 
+    private var exportActions: some View {
+        Group {
+            Button("Prepare my files", systemImage: "square.and.arrow.down") { model.requestExport() }
+            Text(model.exportStatus).font(.footnote).foregroundStyle(.secondary)
+            if !model.exportURLs.isEmpty {
+                ShareLink(items: model.exportURLs) { Label("Share my files", systemImage: "square.and.arrow.up") }
+            }
+            Text(MovementCopy.shareNote).font(.footnote).foregroundStyle(.secondary)
+        }
+    }
+}
+
+private struct PhoneWatchActivityView: View {
+    let snapshot: CompanionSnapshot
+    let notificationActivity: String
+
+    var body: some View {
+        List {
+            Section("Latest readings") {
+                LabeledContent("Watch synced", value: snapshot.generatedAt.formatted(date: .abbreviated, time: .shortened))
+                LabeledContent("Last recorded sleep", value: snapshot.sleepHours.map { $0.formatted(.number.precision(.fractionLength(1))) + " hours" } ?? "Unavailable")
+                if snapshot.issues.isEmpty { Text("No reading issues reported.").foregroundStyle(.secondary) }
+                ForEach(Array(snapshot.issues.enumerated()), id: \.offset) { _, issue in Text(issue).font(.footnote) }
+            }
+            Section("Reminder activity") {
+                LabeledContent("Watch reminders requested", value: snapshot.requestedNotifications.formatted())
+                Text("A requested reminder may not have reached you, for example when notifications are off.").font(.footnote).foregroundStyle(.secondary)
+                DisclosureGroup("Latest iPhone activity") { Text(notificationActivity).font(.footnote) }
+            }
+            Section("Recent updates") {
+                ForEach(snapshot.events) { event in
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(MovementCopy.eventTitle(event.kind))
+                        Text(event.date.formatted(date: .abbreviated, time: .shortened)).font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+            }
+        }.navigationTitle("Watch activity").navigationBarTitleDisplayMode(.inline)
+    }
 }
 
 private struct PromptDetailView: View {
@@ -99,13 +136,13 @@ private struct PromptDetailView: View {
     var body: some View {
         List {
             Section {
-                LabeledContent("Outcome", value: prompt.outcome)
-                LabeledContent("Created", value: prompt.date.formatted(date: .abbreviated, time: .shortened))
-                LabeledContent("Selection method", value: prompt.isManual ? "Manual invitation" : prompt.method)
-                if let selected = prompt.selectedTitle { LabeledContent("Selected exercise", value: selected) }
-                Text("Choose, start, pause, and complete your break on Apple Watch so timing and movement evidence stay together.")
+                LabeledContent("Status", value: MovementCopy.outcome(prompt.outcome))
+                LabeledContent("Invited", value: prompt.date.formatted(date: .abbreviated, time: .shortened))
+                LabeledContent("Suggested for you", value: prompt.isManual ? "You asked for a break" : prompt.method)
+                if let selected = prompt.selectedTitle { LabeledContent("Your choice", value: selected) }
+                Text("Start and finish your break in Move Moment on your Watch.")
                     .font(.footnote).foregroundStyle(.secondary)
-                if prompt.expiresAt <= Date() { Text("This invitation’s response window has ended.").font(.footnote).foregroundStyle(.secondary) }
+                if prompt.expiresAt <= Date() { Text("This invitation has ended. There’ll be another moment to move.").font(.footnote).foregroundStyle(.secondary) }
             }
             ForEach(prompt.options) { option in
                 Section("\(option.effort) effort · \(option.minutes) min") {
@@ -117,30 +154,7 @@ private struct PromptDetailView: View {
     }
 }
 
-struct DailyDetailView: View {
-    let snapshot: CompanionSnapshot
-    var body: some View {
-        List {
-            Section("Recorded daily steps") {
-                if snapshot.days.contains(where: { $0.steps != nil }) {
-                    Chart(snapshot.days.filter { $0.steps != nil }) { day in
-                        BarMark(x: .value("Day", day.date, unit: .day), y: .value("Steps", day.steps ?? 0)).foregroundStyle(.teal)
-                    }.frame(height: 200)
-                }
-                Text("Missing days are not plotted as zero. Dates reflect the watch’s last summary.").font(.caption).foregroundStyle(.secondary)
-            }
-            ForEach(snapshot.days.reversed()) { day in
-                Section(day.date.formatted(date: .complete, time: .omitted)) {
-                    LabeledContent("Steps", value: day.steps.map { $0.formatted(.number.precision(.fractionLength(0))) } ?? "Unavailable")
-                    LabeledContent("Completed breaks", value: String(day.completed))
-                    Text("Low \(day.low) · Moderate \(day.moderate) · High \(day.high)").font(.caption).foregroundStyle(.secondary)
-                }
-            }
-        }.navigationTitle("Daily movement").navigationBarTitleDisplayMode(.inline)
-    }
-}
-
-private struct PhonePreferencesView: View {
+private struct PhoneSettingsView: View {
     let model: PhoneModel
     @AppStorage("phone.reminders") private var reminders = true
     @AppStorage("phone.sound") private var sound = true
@@ -149,50 +163,115 @@ private struct PhonePreferencesView: View {
     var body: some View {
         Form {
             Section {
-                Toggle("Movement reminders on iPhone", isOn: $reminders)
-                    .onChange(of: reminders) { _, enabled in if !enabled { model.notifications.disableReminders() } }
-                Toggle("Custom movement chime", isOn: $sound)
-                Toggle("Haptics while app is open", isOn: $haptics)
-                Button(model.previewingAlert ? "Playing preview…" : "Preview chime & haptics", systemImage: "speaker.wave.2") { model.previewAlert() }
+                Toggle("Movement reminders", isOn: $reminders)
+                    .onChange(of: reminders) { _, enabled in if !enabled && !model.isPreview { model.notifications.disableReminders() } }
+                Toggle("Reminder sound", isOn: $sound)
+                Toggle("Vibrate while app is open", isOn: $haptics)
+                Button(model.previewingAlert ? "Playing…" : "Try sound & vibration", systemImage: "speaker.wave.2") { model.previewAlert() }
                     .disabled(model.previewingAlert)
                 LabeledContent("Notifications", value: model.notificationStatus)
-                LabeledContent("Notification sound", value: model.soundStatus)
                 Button("Allow notifications", systemImage: "bell.badge") { Task { await model.requestNotifications() } }
                 Button("Open iPhone Settings", systemImage: "gear") { model.openSettings() }
-            } header: { Text("iPhone reminders") } footer: {
-                Text("Your watch and phone coordinate the same reminder, with exercise and delay actions on either alert. Apple chooses where it appears; late phone copies are skipped to avoid a second alert. Custom haptics work while this app is open. iOS controls background vibration and sound. Sound changes apply to future reminders.")
+            } header: { Text("On your iPhone") } footer: {
+                Text("Apple chooses whether reminders appear on your phone or Watch. When this app is closed, your iPhone’s sound and vibration settings apply.")
             }
-            Section("Last phone notification activity") {
-                Text(model.notificationActivity).font(.footnote)
-            }
-            Section("Keep the watch timer visible") {
-                Label("Set Return to Clock to 1 hour", systemImage: "applewatch")
-                Text("On your Apple Watch: Settings → General → Return to Clock → ExerciseAnalyser → Custom → After 1 hour.")
-                    .font(.footnote)
-                Text("This avoids the usual automatic return to the watch face during a movement break. The display can still dim, and you can leave the app at any time.")
-                    .font(.footnote).foregroundStyle(.secondary)
-            }
-            Section("Watch permissions") {
-                if let snapshot = model.snapshot {
-                    ForEach(snapshot.permissions) { detail in LabeledContent(detail.title, value: detail.value) }
-                    Text("Reported \(snapshot.generatedAt.formatted(date: .abbreviated, time: .shortened))").font(.caption).foregroundStyle(.secondary)
+            Section {
+                DisclosureGroup("Reminder settings") {
+                    if let snapshot = model.snapshot {
+                        LabeledContent("Movement reminders", value: snapshot.monitoring ? "On" : "Paused")
+                        ForEach(snapshot.preferences) { detail in LabeledContent(MovementCopy.settingTitle(detail.title), value: detail.value) }
+                    } else { Text("Your Watch settings will appear after it syncs.").foregroundStyle(.secondary) }
                 }
-                Text("Open Move Moment → Preferences on Apple Watch to request Health, Calendar, Motion, and watch notification access. Phone permissions do not grant watch access. HealthKit does not reveal individual read grants.")
-                    .font(.footnote).foregroundStyle(.secondary)
-            }
-            Section("Research preferences on watch") {
-                if let snapshot = model.snapshot {
-                    LabeledContent("Monitoring", value: snapshot.monitoring ? "Enabled" : "Paused")
-                    ForEach(snapshot.preferences) { detail in LabeledContent(detail.title, value: detail.value) }
+                DisclosureGroup("Permissions") {
+                    if let snapshot = model.snapshot {
+                        ForEach(snapshot.permissions) { detail in LabeledContent(detail.title, value: MovementCopy.permissionValue(detail.value)) }
+                        Text(MovementCopy.healthNote).font(.footnote).foregroundStyle(.secondary)
+                    } else { Text("Open Settings → Permissions on your Watch to get connected.").foregroundStyle(.secondary) }
                 }
-                Text("Change active hours, reminder frequency, calendars, and enabled exercises in the watch’s Preferences. This phone displays the saved configuration from the last sync.").font(.footnote).foregroundStyle(.secondary)
+                NavigationLink {
+                    List {
+                        Text(MovementCopy.timerIntro)
+                        Text(MovementCopy.timerPath)
+                        Text(MovementCopy.timerNote).foregroundStyle(.secondary)
+                    }.navigationTitle("Timer display").navigationBarTitleDisplayMode(.inline)
+                } label: {
+                    Label("Keep your timer on screen", systemImage: "applewatch")
+                }
+            } header: { Text("On your Watch") } footer: {
+                Text("Change your reminder times, permissions, calendars, and exercises in Move Moment → Settings on your Watch.")
             }
-            Section("Connection & privacy") {
+            Section("Your devices") {
                 Label(model.connectionStatus, systemImage: "applewatch.radiowaves.left.and.right")
-                Button("Request watch summary", systemImage: "arrow.clockwise") { model.refresh() }
-                Text("Keep Bluetooth and Background App Refresh enabled for both apps. The watch collects the research signals; the phone does not request duplicate Health, Motion, or Calendar access. Summaries and requested exports stay on your paired devices until you share them. No account, analytics SDK, or server is used.")
-                    .font(.footnote).foregroundStyle(.secondary)
+                Button("Sync with Watch", systemImage: "arrow.clockwise") { model.refresh() }
+                if let snapshot = model.snapshot {
+                    Text("Last synced \(snapshot.generatedAt.formatted(date: .abbreviated, time: .shortened))").font(.footnote).foregroundStyle(.secondary)
+                }
+                Text("Keep your devices nearby with Bluetooth and Background App Refresh on.").font(.footnote).foregroundStyle(.secondary)
             }
-        }.navigationTitle("Preferences")
+            Section("Your privacy") {
+                Text(MovementCopy.privacy).font(.footnote).foregroundStyle(.secondary)
+            }
+        }.navigationTitle("Settings")
     }
 }
+
+#if DEBUG
+#Preview("Today · Sample week") {
+    PhoneContentView(model: .preview(snapshot: PhoneModel.previewSnapshot()))
+}
+
+#Preview("Research · Invitations & events") {
+    PhoneContentView(model: .preview(snapshot: PhoneModel.previewSnapshot()), initialTab: 1)
+}
+
+#Preview("Research · Before first sync") {
+    PhoneContentView(model: .preview(), initialTab: 1)
+}
+
+#Preview("Settings · Connected") {
+    PhoneContentView(model: .preview(snapshot: PhoneModel.previewSnapshot()), initialTab: 2)
+        .defaultAppStorage(UserDefaults(suiteName: "MoveMoment.PhonePreviews")!)
+}
+
+#Preview("Settings · Setup") {
+    NavigationStack { PhoneSettingsView(model: .preview()) }
+        .defaultAppStorage(UserDefaults(suiteName: "MoveMoment.PhonePreviews")!)
+}
+
+#Preview("Daily movement · Missing day") {
+    NavigationStack { DailyDetailView(snapshot: PhoneModel.previewSnapshot()) }
+}
+
+#Preview("Daily movement · No readings") {
+    NavigationStack { DailyDetailView(snapshot: PhoneModel.previewSnapshot(missingSignals: true)) }
+}
+
+#Preview("Invitation · Active") {
+    NavigationStack { PromptDetailView(prompt: PhoneModel.previewSnapshot().prompts[0]) }
+}
+
+#Preview("Invitation · Completed & expired") {
+    NavigationStack { PromptDetailView(prompt: PhoneModel.previewSnapshot().prompts[1]) }
+}
+
+#Preview("Reminder · Not synced") {
+    let model = PhoneModel.preview()
+    model.openedPromptID = UUID()
+    return PhoneContentView(model: model)
+}
+
+#Preview("Research · Dark mode") {
+    PhoneContentView(model: .preview(snapshot: PhoneModel.previewSnapshot()), initialTab: 1)
+        .preferredColorScheme(.dark)
+}
+#Preview("Settings · Accessibility text") {
+    PhoneContentView(model: .preview(snapshot: PhoneModel.previewSnapshot()), initialTab: 2)
+        .environment(\.dynamicTypeSize, .accessibility3)
+}
+
+#Preview("Error alert") {
+    let model = PhoneModel.preview(snapshot: PhoneModel.previewSnapshot())
+    model.error = "Could not save the watch summary. Please try again."
+    return PhoneContentView(model: model)
+}
+#endif

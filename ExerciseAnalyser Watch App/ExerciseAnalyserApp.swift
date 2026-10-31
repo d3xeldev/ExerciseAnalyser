@@ -8,6 +8,7 @@ struct ExerciseAnalyser_Watch_AppApp: App {
     var body: some Scene {
         WindowGroup {
             ContentView()
+                .tint(MovementPalette.low)
                 .task { await AppModel.shared.foreground() }
                 .onChange(of: scenePhase) { _, phase in
                     if phase == .active { Task { await AppModel.shared.foreground() } }

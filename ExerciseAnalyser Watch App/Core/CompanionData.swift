@@ -30,8 +30,23 @@ nonisolated struct CompanionSnapshot: Codable, Sendable {
         let low: Int
         let moderate: Int
         let high: Int
+        var missed: Int? = nil
+        var selections: EffortCounts? = nil
         var id: Date { date }
         var completed: Int { low + moderate + high }
+    }
+
+    struct EffortCounts: Codable, Sendable {
+        let low: Int
+        let moderate: Int
+        let high: Int
+
+        // Resolve equal counts consistently in favour of the gentler effort.
+        var dominant: String? {
+            let maximum = max(low, moderate, high)
+            guard maximum > 0 else { return nil }
+            return low == maximum ? "easy" : moderate == maximum ? "moderate" : "challenge"
+        }
     }
 
     struct Prompt: Codable, Identifiable, Sendable {
