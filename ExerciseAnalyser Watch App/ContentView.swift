@@ -1,6 +1,32 @@
 import SwiftUI
 import EventKit
 
+private struct WatchLoadingScreen: View {
+    let title: String
+
+    var body: some View {
+        ZStack {
+            Color.black.ignoresSafeArea()
+            ProgressView(title)
+                .progressViewStyle(.circular)
+                .tint(.white)
+                .foregroundStyle(.white)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+}
+
+private extension View {
+    func blockingProgress(_ title: String?) -> some View {
+        self
+            .disabled(title != nil)
+            .accessibilityHidden(title != nil)
+            .overlay {
+                if let title { WatchLoadingScreen(title: title) }
+            }
+    }
+}
+
 private extension Effort {
     var color: Color {
         switch self {
@@ -19,6 +45,7 @@ struct ContentView: View {
     @Environment(\.scenePhase) private var scenePhase
     @State private var model = AppModel.shared
     @State private var path: [WatchDestination] = []
+    @State private var dashboardPage = 0
     @State private var leavingInvitation: UUID?
     @State private var manualPromptID: UUID?
 
@@ -47,11 +74,17 @@ struct ContentView: View {
                     }
                 }
         }
+        .blockingProgress(model.loadingData ? "Loading…" : (model.savingData > 0 ? "Saving…" : nil))
         .defaultAppStorage(model.isPreview ? UserDefaults(suiteName: "MoveMoment.WatchPreviews")! : .standard)
         .onOpenURL { url in
             guard let kind = ComplicationKind.allCases.first(where: { $0.url == url }) else { return }
             model.complicationOpened(kind)
-            routeCurrentOptions()
+            if kind == .missed {
+                path = []
+                dashboardPage = 2
+            } else {
+                routeCurrentOptions()
+            }
         }
         .onChange(of: scenePhase) { _, phase in
             if phase == .active && !model.isPreview {
@@ -80,7 +113,7 @@ struct ContentView: View {
         .alert("Ignore this movement break?", isPresented: Binding(get: { leavingInvitation != nil }, set: { if !$0 { leavingInvitation = nil } })) {
             if let id = leavingInvitation {
                 Button("Ignore break", role: .destructive) {
-                    if model.leaveInvitation(id) { path = [] }
+                    Task { if await model.leaveInvitation(id) { path = [] } }
                     leavingInvitation = nil
                 }
             }
@@ -137,13 +170,24 @@ struct ContentView: View {
     }
 
     private var dashboard: some View {
-        TabView {
+        TabView(selection: $dashboardPage) {
             TimelineView(.periodic(from: .now, by: 60)) { timeline in
                 statusCard(at: timeline.date)
             }
-            metricCard("Steps", value: todayContext?.stepsToday, unit: "steps today", symbol: "shoeprints.fill", color: .blue)
+            .tag(0)
+            TimelineView(.periodic(from: .now, by: 60)) { timeline in
+                weeklyCard(at: timeline.date)
+            }
+            .tag(1)
+            TimelineView(.periodic(from: .now, by: 60)) { timeline in
+                missedCard(at: timeline.date)
+            }
+            .tag(2)
+            metricCard("Steps", value: todayContext?.stepsToday, unit: "steps today", symbol: "shoeprints.fill", color: MovementPalette.steps)
+                .tag(3)
             metricCard("Heart rate", value: model.context?.heartRate?.value, unit: "bpm · latest", symbol: "heart.fill", color: .red,
                        sampledAt: model.context?.heartRate?.date)
+                .tag(4)
         }
         .tabViewStyle(.verticalPage)
         .toolbar {
@@ -154,6 +198,78 @@ struct ContentView: View {
                 Button("More", systemImage: "ellipsis") { path.append(.more) }
             }
         }
+    }
+
+    private func weeklyCard(at date: Date) -> some View {
+        let days = model.summaryDays(at: date)
+        let today = days.last { Calendar.current.isDate($0.date, inSameDayAs: date) }
+        let color = MovementPalette.effort(today?.selections?.dominant)
+        let maximum = max(days.map(\.completed).max() ?? 0, 1)
+        return ScrollView(.vertical) {
+            VStack(spacing: 14) {
+                Label("This week", systemImage: "calendar")
+                    .font(.headline).foregroundStyle(color)
+                    .frame(maxWidth: .infinity)
+                    .multilineTextAlignment(.center)
+                    .padding(.bottom, 10)
+                if model.dataAvailable {
+                    ForEach(days.reversed()) { day in
+                        HStack(spacing: 8) {
+                            Text(Calendar.current.isDate(day.date, inSameDayAs: date) ? "Today" : day.date.formatted(.dateTime.weekday(.abbreviated)))
+                                .font(.caption.weight(.medium))
+                                .lineLimit(1)
+                                .minimumScaleFactor(0.7)
+                                .frame(width: 48, alignment: .leading)
+                            GeometryReader { geometry in
+                                ZStack(alignment: .leading) {
+                                    Capsule().fill(.white.opacity(0.1))
+                                    if day.completed > 0 {
+                                        Capsule()
+                                            .fill(LinearGradient(gradient: MovementPalette.completionGradient(day), startPoint: .leading, endPoint: .trailing))
+                                            .frame(width: max(4, geometry.size.width * Double(day.completed) / Double(maximum)))
+                                    }
+                                }
+                            }
+                            .frame(height: 8)
+                            Text(day.completed.formatted())
+                                .font(.caption.monospacedDigit())
+                                .frame(minWidth: 20, alignment: .trailing)
+                        }
+                        .frame(minHeight: 24)
+                        .accessibilityElement(children: .ignore)
+                        .accessibilityLabel("\(day.date.formatted(.dateTime.weekday(.wide))): \(day.completed) completed breaks, \(day.low) low, \(day.moderate) moderate, \(day.high) high effort")
+                    }
+                    Text("\(days.reduce(0) { $0 + $1.completed }) completed breaks")
+                        .font(.caption).foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity)
+                        .multilineTextAlignment(.center)
+                } else {
+                    Text("Study data unavailable").font(.caption).foregroundStyle(.secondary)
+                }
+            }
+            .padding(.horizontal, 20)
+            .padding(.vertical, 12)
+        }
+        .containerBackground(for: .tabView) { tabGlow(color) }
+    }
+
+    private func missedCard(at date: Date) -> some View {
+        let missed = CompanionSummary.missedCount(in: model.state.prompts, on: date, asOf: date, calendar: .current)
+        return VStack(spacing: 2) {
+            Label("Missed breaks", systemImage: "clock.badge.xmark")
+                .font(.headline).foregroundStyle(MovementPalette.missed)
+            Text(model.dataAvailable ? missed.formatted() : "—")
+                .font(.system(size: 54, weight: .semibold, design: .rounded))
+                .monospacedDigit().minimumScaleFactor(0.5).lineLimit(1)
+                .contentTransition(.numericText())
+            Text(model.dataAvailable ? "missed today" : "No data yet")
+                .font(.callout).foregroundStyle(.secondary)
+        }
+        .multilineTextAlignment(.center)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .padding(.horizontal, 24)
+        .containerBackground(for: .tabView) { tabGlow(MovementPalette.missed) }
+        .accessibilityElement(children: .combine)
     }
 
     private var missingPermissions: [String] {
@@ -266,7 +382,7 @@ struct ContentView: View {
             if let id = manualPromptID {
                 invitation(id)
             } else {
-                ProgressView("Preparing your break…")
+                WatchLoadingScreen(title: "Preparing your break…")
             }
         }
         .task {
@@ -309,7 +425,7 @@ struct ContentView: View {
                     ToolbarItem(placement: .topBarLeading) {
                         Button("Back", systemImage: "chevron.left") {
                             if prompt.isManual {
-                                if model.leaveInvitation(id) { path = [] }
+                                Task { if await model.leaveInvitation(id) { path = [] } }
                             } else { leavingInvitation = id }
                         }
                         .labelStyle(.iconOnly)
@@ -404,7 +520,7 @@ private struct ExerciseSessionView: View {
                                         showingDisplayTip = false
                                         model.startExercise(prompt.id)
                                     }
-                                    .buttonStyle(.borderedProminent)
+                                    .buttonStyle(.glass)
                                     Button("Not now", role: .cancel) { showingDisplayTip = false }
                                 }.padding()
                             }.navigationTitle("Before you start")
@@ -426,7 +542,7 @@ private struct ExerciseSessionView: View {
                                 Text("Move within your comfort. Stop if you feel pain, dizziness, or unwell.").foregroundStyle(.secondary)
                             }
                             .font(.caption)
-                            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Done") { showingInfo = false } } }
+                            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Done", systemImage: "checkmark") { showingInfo = false }.labelStyle(.iconOnly) } }
                         }
                     }
                     .alert("Go back to effort selection?", isPresented: $confirmingBack) {
@@ -605,10 +721,10 @@ private struct PermissionsView: View {
                     .disabled(model.motionAccess)
                 Button(model.notificationAccess ? "Notifications enabled" : "Allow notifications") { Task { await model.requestNotifications() } }
                     .disabled(model.notificationAccess)
-                if model.refreshingAccess { ProgressView("Checking access…") }
             }.disabled(model.requestingAccess || model.refreshingAccess)
             Text(MovementCopy.healthNote).font(.footnote).foregroundStyle(.secondary)
         }.navigationTitle("Permissions")
+            .blockingProgress(model.refreshingAccess ? "Checking access…" : nil)
     }
 }
 
@@ -886,7 +1002,7 @@ private struct AlarmTimeEditor: View {
                         } label: {
                             Image(systemName: "checkmark")
                                 .font(.system(size: 20, weight: .semibold))
-                                .foregroundStyle(.green)
+                                .foregroundStyle(.white)
                                 .frame(width: 40, height: 40)
                                 .glassEffect(.regular.interactive(), in: Circle())
                         }

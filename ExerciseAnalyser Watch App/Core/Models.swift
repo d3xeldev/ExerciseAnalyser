@@ -96,6 +96,7 @@ nonisolated struct ContextSnapshot: Codable, Sendable {
     var busyIntervals: [DateInterval]?
     var lastBusyEventActivity: BusyEventActivity?
     var stepHistory: [ComplicationSnapshot.DailyTotal]?
+    var exerciseHistory: [ComplicationSnapshot.DailyTotal]?
     var stepsToday: Double?
     var stepsRecent: Double?
     var activeEnergy: Double?

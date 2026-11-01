@@ -33,7 +33,7 @@ struct MovementProvider: TimelineProvider {
                                                steps: 3250, exerciseMinutes: 18, completedToday: 2,
                                                effortCompletions: ["easy", "easy", "easy", "moderate", "moderate", "challenge"].map {
                                                    .init(date: now, effort: $0)
-                                               }))
+                                               }, missedHistory: [.init(date: Calendar.current.startOfDay(for: now), value: 2)]))
     }
 }
 
@@ -52,6 +52,7 @@ struct MovementComplicationView: View {
         case .moment: ready ? .mint : .cyan
         case .activity: .blue
         case .breaks: .mint
+        case .missed: Color(red: 229 / 255, green: 72 / 255, blue: 0) // #e54800
         }
     }
     private var symbol: String {
@@ -63,6 +64,7 @@ struct MovementComplicationView: View {
             return ready ? "figure.walk" : "sparkles"
         case .activity: return "shoeprints.fill"
         case .breaks: return "checkmark.circle.fill"
+        case .missed: return "clock.badge.xmark"
         }
     }
     private var value: String {
@@ -74,6 +76,7 @@ struct MovementComplicationView: View {
             guard activityAvailable, let steps = snapshot.steps else { return "—" }
             return steps.formatted(.number.notation(.compactName).precision(.fractionLength(0...1)))
         case .breaks: return count.map(String.init) ?? "—"
+        case .missed: return snapshot.missedToday(at: entry.date).map(String.init) ?? "—"
         }
     }
     private var caption: String {
@@ -81,6 +84,7 @@ struct MovementComplicationView: View {
         case .moment: ready ? "CHOOSE" : (snapshot.monitoring ? "MIN LOW" : "PAUSED")
         case .activity: "STEPS"
         case .breaks: "BREAKS"
+        case .missed: "MISSED BREAKS"
         }
     }
 
@@ -124,6 +128,17 @@ struct MovementComplicationView: View {
                     if kind == .moment {
                         Text(momentLabel)
                             .font(.system(.caption2, design: .rounded).bold()).minimumScaleFactor(0.6)
+                    } else if kind == .activity {
+                        // Preserve the original value line's height so the icon stays in place.
+                        Text("0").font(.system(.title3, design: .rounded).bold())
+                            .hidden()
+                            .frame(maxWidth: .infinity)
+                            .overlay {
+                                Text(value)
+                                    .font(.system(size: 18, design: .rounded).bold())
+                                    .lineLimit(1)
+                                    .minimumScaleFactor(0.6)
+                            }
                     } else {
                         Text(value).font(.system(.title3, design: .rounded).bold()).minimumScaleFactor(0.6)
                     }
@@ -139,7 +154,7 @@ struct MovementComplicationView: View {
                 Image(systemName: symbol).font(.system(size: 28, weight: .medium)).widgetAccentable()
             } else {
                 Text(value)
-                    .font(.system(size: 40, weight: .regular, design: .rounded))
+                    .font(.system(size: kind == .activity ? 32 : 40, weight: .regular, design: .rounded))
                     .lineLimit(1)
                     .minimumScaleFactor(0.8)
             }
@@ -154,6 +169,7 @@ struct MovementComplicationView: View {
                      ? "\(value) min low movement" : snapshot.title(at: entry.date))
             case .activity: Text("Steps today").foregroundStyle(.blue)
             case .breaks: Text("Breaks today").foregroundStyle(Color("AccentColor"))
+            case .missed: Text("Missed today").foregroundStyle(color)
             }
         }
     }
@@ -164,6 +180,7 @@ struct MovementComplicationView: View {
             case .moment: Label(snapshot.title(at: entry.date), systemImage: symbol)
             case .activity: Label("\(value) steps", systemImage: symbol)
             case .breaks: Label("\(value) breaks today", systemImage: symbol)
+            case .missed: Label("\(value) missed today", systemImage: symbol)
             }
         }
     }
@@ -181,6 +198,9 @@ struct MovementComplicationView: View {
             case .breaks:
                 WeeklyTotalsView(days: snapshot.weeklyBreakDays(at: entry.date), date: entry.date,
                                  title: "Weekly breaks", symbol: symbol, color: color, unit: "breaks")
+            case .missed:
+                WeeklyTotalsView(days: snapshot.weeklyMissedDays(at: entry.date), date: entry.date,
+                                 title: "Missed breaks", symbol: symbol, color: color, unit: "missed breaks")
             }
         }
         .lineLimit(1)
@@ -217,7 +237,7 @@ struct ActivityWidget: Widget {
         StaticConfiguration(kind: ComplicationKind.activity.rawValue, provider: MovementProvider()) {
             MovementComplicationView(entry: $0, kind: .activity)
         }
-        .configurationDisplayName("Daily Movement")
+        .configurationDisplayName("Steps")
         .description("Seven days of steps in the rectangular widget, and today’s steps in compact complications.")
         .supportedFamilies([.accessoryCircular, .accessoryCorner, .accessoryInline, .accessoryRectangular])
         .contentMarginsDisabled()
@@ -232,6 +252,18 @@ struct BreaksWidget: Widget {
         .configurationDisplayName("Movement Breaks")
         .description("Seven days of completed movement breaks in the rectangular widget, and today’s count in compact complications.")
         .supportedFamilies([.accessoryCircular, .accessoryCorner, .accessoryInline, .accessoryRectangular])
+        .contentMarginsDisabled()
+    }
+}
+
+struct MissedBreaksWidget: Widget {
+    var body: some WidgetConfiguration {
+        StaticConfiguration(kind: ComplicationKind.missed.rawValue, provider: MovementProvider()) {
+            MovementComplicationView(entry: $0, kind: .missed)
+        }
+        .configurationDisplayName("Missed Breaks")
+        .description("Today’s missed movement breaks, or the last seven days in the rectangular complication.")
+        .supportedFamilies([.accessoryCircular, .accessoryCorner, .accessoryRectangular])
         .contentMarginsDisabled()
     }
 }
@@ -504,6 +536,7 @@ struct MoveMomentWidgetBundle: WidgetBundle {
         MomentWidget()
         ActivityWidget()
         BreaksWidget()
+        MissedBreaksWidget()
         WeeklyEffortWidget()
         DailyEffortWidget()
     }
@@ -521,6 +554,10 @@ private enum ComplicationPreviewData {
         snapshot.stepHistory = (-6...0).map { offset in
             .init(date: Calendar.current.date(byAdding: .day, value: offset, to: Calendar.current.startOfDay(for: date))!,
                   value: offset == -3 ? nil : Double((offset + 7) * 1100))
+        }
+        snapshot.missedHistory = (-6...0).map { offset in
+            .init(date: Calendar.current.date(byAdding: .day, value: offset, to: Calendar.current.startOfDay(for: date))!,
+                  value: Double([1, 0, 3, 2, 0, 1, 2][offset + 6]))
         }
         snapshot.breakCompletions = (-6...0).flatMap { offset in
             Array(repeating: Calendar.current.date(byAdding: .day, value: offset, to: date)!, count: (offset + 7) % 4)
@@ -557,25 +594,25 @@ private enum ComplicationPreviewData {
                   snapshot: ComplicationPreviewData.monitoring.snapshot)
 }
 
-#Preview("Daily Movement · Circular", as: .accessoryCircular) {
+#Preview("Steps · Circular", as: .accessoryCircular) {
     ActivityWidget()
 } timeline: {
     ComplicationPreviewData.monitoring
 }
 
-#Preview("Daily Movement · Corner", as: .accessoryCorner) {
+#Preview("Steps · Corner", as: .accessoryCorner) {
     ActivityWidget()
 } timeline: {
     ComplicationPreviewData.monitoring
 }
 
-#Preview("Daily Movement · Inline", as: .accessoryInline) {
+#Preview("Steps · Inline", as: .accessoryInline) {
     ActivityWidget()
 } timeline: {
     ComplicationPreviewData.monitoring
 }
 
-#Preview("Daily Movement · Rectangular", as: .accessoryRectangular) {
+#Preview("Steps · Rectangular", as: .accessoryRectangular) {
     ActivityWidget()
 } timeline: {
     ComplicationPreviewData.weekly
@@ -645,4 +682,22 @@ private enum ComplicationPreviewData {
     ))
     ComplicationPreviewData.monitoring
     MovementEntry(date: ComplicationPreviewData.date, snapshot: .empty(at: ComplicationPreviewData.date))
+}
+
+#Preview("Missed Breaks · Circular", as: .accessoryCircular) {
+    MissedBreaksWidget()
+} timeline: {
+    ComplicationPreviewData.weekly
+}
+
+#Preview("Missed Breaks · Corner", as: .accessoryCorner) {
+    MissedBreaksWidget()
+} timeline: {
+    ComplicationPreviewData.weekly
+}
+
+#Preview("Missed Breaks · Rectangular", as: .accessoryRectangular) {
+    MissedBreaksWidget()
+} timeline: {
+    ComplicationPreviewData.weekly
 }

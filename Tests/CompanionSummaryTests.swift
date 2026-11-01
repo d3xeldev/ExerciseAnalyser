@@ -68,12 +68,24 @@ final class CompanionSummaryTests: XCTestCase {
         let oldDay = try JSONDecoder().decode(CompanionSnapshot.Day.self, from: legacy)
         XCTAssertNil(oldDay.missed)
         XCTAssertNil(oldDay.selections)
+        XCTAssertNil(oldDay.exerciseMinutes)
         XCTAssertEqual(oldDay.completed, 3)
         for count in [0, 5] {
             let day = CompanionSnapshot.Day(date: now, steps: nil, low: 1, moderate: 2, high: 0, missed: count)
             let copy = try JSONDecoder().decode(CompanionSnapshot.Day.self, from: JSONEncoder().encode(day))
             XCTAssertEqual(copy.missed, count)
             XCTAssertEqual(copy.completed, 3)
+        }
+    }
+
+    func testExerciseMinutesPreserveMissingZeroAndRecordedValues() throws {
+        for minutes: Double? in [nil, 0, 24.5] {
+            let day = CompanionSnapshot.Day(date: now, steps: 1200, low: 1, moderate: 0, high: 0,
+                                            exerciseMinutes: minutes)
+            let copy = try JSONDecoder().decode(CompanionSnapshot.Day.self, from: JSONEncoder().encode(day))
+            XCTAssertEqual(copy.exerciseMinutes, minutes)
+            XCTAssertEqual(copy.steps, 1200)
+            XCTAssertEqual(copy.completed, 1)
         }
     }
 

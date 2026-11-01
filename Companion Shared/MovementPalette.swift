@@ -1,6 +1,9 @@
 import SwiftUI
 
 enum MovementPalette {
+    static let steps = Color.blue
+    static let missed = Color(red: 229 / 255, green: 72 / 255, blue: 0) // #e54800
+    static let exercise = Color(red: 164 / 255, green: 1, blue: 0)
     static let low = Color.mint
     static let moderate = Color.yellow
     static let high = Color.orange

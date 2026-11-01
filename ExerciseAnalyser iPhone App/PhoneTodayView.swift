@@ -8,7 +8,7 @@ struct PhoneTodayView: View {
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @ScaledMetric(relativeTo: .largeTitle) private var interventionSize = 96
     @State private var showingSync = false
-    @State private var showingWeek = false
+    @State private var selectedMetric: WeeklyMetric?
     @ScaledMetric(relativeTo: .caption) private var weekColumnWidth = 28
     @State private var scrollOffset: CGFloat = 0
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -37,7 +37,7 @@ struct PhoneTodayView: View {
                             }
                             .frame(minHeight: heroHeight)
                             .opacity(fade)
-                            .offset(y: reduceMotion ? 0 : scrollOffset * 0.15)
+                            .offset(y: reduceMotion ? 0 : scrollOffset * 0.3)
                             .accessibilityHidden(fade == 0)
                             .allowsHitTesting(fade > 0.1)
                             weekCard(snapshot, height: tileHeight)
@@ -73,11 +73,11 @@ struct PhoneTodayView: View {
                     }.tint(MovementPalette.low)
                 }
             }
-            .sheet(isPresented: $showingWeek) {
+            .sheet(item: $selectedMetric) { metric in
                 if let snapshot {
-                    NavigationStack { DailyDetailView(snapshot: snapshot) }
+                    NavigationStack { DailyDetailView(snapshot: snapshot, metric: metric) }
                         .presentationDetents([.large])
-                        .presentationDragIndicator(.visible)
+                        .presentationDragIndicator(.hidden)
                         .presentationCornerRadius(32)
                         .preferredColorScheme(.dark)
                         .tint(MovementPalette.low)
@@ -118,13 +118,9 @@ struct PhoneTodayView: View {
                 .font(.system(size: interventionSize, weight: .bold, design: .rounded))
                 .foregroundStyle(.white)
                 .minimumScaleFactor(0.5).lineLimit(1)
-                .contentTransition(.numericText())
-            Text(today?.completed == 1 ? "break completed today" : "breaks completed today")
+                .modifier(PhoneNumericTransition(value: today?.completed))
+            Text("breaks completed today")
                 .font(.title3).multilineTextAlignment(.center)
-            if today == nil {
-                Text("Waiting for today’s watch update")
-                    .font(.caption).foregroundStyle(.white.opacity(0.65))
-            }
         }
         .frame(maxWidth: .infinity)
         .padding(.vertical, spacing)
@@ -143,7 +139,7 @@ struct PhoneTodayView: View {
 
     private func weekCard(_ snapshot: CompanionSnapshot, height: CGFloat) -> some View {
         let maximum = max(snapshot.days.map(\.completed).max() ?? 0, 1)
-        return Button { showingWeek = true } label: {
+        return Button { selectedMetric = .breaks } label: {
             card(height: height) {
                 VStack(alignment: .leading, spacing: spacing) {
                     HStack {
@@ -185,6 +181,7 @@ struct PhoneTodayView: View {
                         .frame(maxWidth: .infinity)
                     }
                     Text(day.completed.formatted()).font(.caption.weight(.semibold).monospacedDigit())
+                        .modifier(PhoneNumericTransition(value: day.completed))
                 }
                 .frame(maxWidth: .infinity)
                 .accessibilityElement(children: .ignore)
@@ -198,30 +195,39 @@ struct PhoneTodayView: View {
         let missed = snapshot.days.last { Calendar.current.isDate($0.date, inSameDayAs: now) }?.missed
         let columns = dynamicTypeSize >= .xLarge ? [GridItem(.flexible(), spacing: spacing)] : [GridItem(.flexible(), spacing: spacing), GridItem(.flexible(), spacing: spacing)]
         return LazyVGrid(columns: columns, spacing: spacing) {
-            Button { showingWeek = true } label: {
+            Button { selectedMetric = .missed } label: {
                 metricCard("Missed today", symbol: "clock.badge.xmark", value: missed.map { $0.formatted() } ?? "—", unit: nil,
                            detail: missed == nil ? "Waiting for Watch sync" : "Dismissed or unanswered")
             }
             .buttonStyle(.plain)
             .accessibilityLabel(missed.map { "\($0) missed breaks today" } ?? "Missed breaks unavailable")
-            .accessibilityHint("Shows your daily counts and what counts as missed")
-            metricCard("Steps today", symbol: "figure.walk", value: checkedToday ? number(snapshot.steps) : "—", unit: nil,
-                       detail: readingFooter(snapshot.checkedAt, now: now))
-            metricCard("Exercise today", symbol: "timer", value: checkedToday ? number(snapshot.exerciseMinutes) : "—", unit: "min",
-                       detail: checkedToday && snapshot.exerciseMinutes != nil ? "Active minutes today" : "Waiting for a reading")
+            .accessibilityHint("Shows your missed breaks over the week")
+            Button { selectedMetric = .steps } label: {
+                metricCard("Steps today", symbol: "figure.walk", value: checkedToday ? number(snapshot.steps) : "—", unit: nil,
+                           detail: readingFooter(snapshot.checkedAt, now: now))
+            }
+            .buttonStyle(.plain)
+            .accessibilityHint("Shows your steps over the week")
+            Button { selectedMetric = .exercise } label: {
+                metricCard("Exercise today", symbol: "timer", value: checkedToday ? number(snapshot.exerciseMinutes) : "—", unit: "min",
+                           detail: checkedToday && snapshot.exerciseMinutes != nil ? "Active minutes today" : "Waiting for a reading")
+            }
+            .buttonStyle(.plain)
+            .accessibilityHint("Shows your active minutes over the week")
             metricCard("Heart rate", symbol: "heart.fill", value: number(snapshot.heartRate), unit: "bpm",
                        detail: readingFooter(snapshot.heartRateAt, now: now))
         }
     }
 
-    private func metricCard(_ title: String, symbol: String, value: String, unit: String?, detail: String) -> some View {
+    private func metricCard(_ title: String, symbol: String, value: String, unit: String?, detail: String, color: Color = .white.opacity(0.65)) -> some View {
         card(square: true) {
             VStack(alignment: .leading, spacing: 0) {
-                cardTitle(title, symbol: symbol).padding(.bottom, 12)
+                cardTitle(title, symbol: symbol, color: color).padding(.bottom, 12)
                 VStack(alignment: .leading, spacing: 6) {
                     HStack(alignment: .firstTextBaseline, spacing: 4) {
                         Text(value).font(.system(.largeTitle, design: .rounded, weight: .medium))
-                            .minimumScaleFactor(0.6).lineLimit(1).contentTransition(.numericText())
+                            .minimumScaleFactor(0.6).lineLimit(1)
+                            .modifier(PhoneNumericTransition(value: value))
                         if let unit {
                             Text(unit).font(.subheadline).foregroundStyle(.white.opacity(0.65))
                         }
@@ -277,10 +283,10 @@ struct PhoneTodayView: View {
         }
     }
 
-    private func cardTitle(_ title: String, symbol: String) -> some View {
+    private func cardTitle(_ title: String, symbol: String, color: Color = .white.opacity(0.65)) -> some View {
         Label(title.uppercased(), systemImage: symbol)
             .font(.caption2.weight(.semibold))
-            .foregroundStyle(.white.opacity(0.65))
+            .foregroundStyle(color)
             .accessibilityLabel(title)
     }
 

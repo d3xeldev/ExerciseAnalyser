@@ -68,12 +68,24 @@ final class AppModel {
         }
     }
 
+    var loadingData = false
+    var savingData = 0
+    @ObservationIgnored private var startupTask: Task<Void, Never>?
+    private var enteringForeground = false
+
     private init(isPreview: Bool = ProcessInfo.processInfo.environment["XCODE_RUNNING_FOR_PREVIEWS"] == "1") {
         self.isPreview = isPreview
         if isPreview { return }
+        loadingData = true
+        startupTask = Task { await initialize() }
+    }
+
+    private func initialize() async {
+        defer { loadingData = false }
         do {
             let directory = try FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
-            store = try StudyStore(url: directory.appendingPathComponent("Study/study.json"))
+            let url = directory.appendingPathComponent("Study/study.json")
+            store = StudyStore.loaded(try await StudyStore.loadState(from: url), url: url)
             store?.sessionID = sessionID
         } catch { message = "Study data could not be opened: \(error.localizedDescription) Monitoring is disabled to protect existing logs." }
         if let data = UserDefaults.standard.data(forKey: "pendingBackgroundRefresh") {
@@ -137,9 +149,9 @@ final class AppModel {
         }
     }
 
-    private func mutate(_ change: (inout StudyState) throws -> Void) throws {
+    private func mutate(_ change: (inout StudyState) throws -> Void) async throws {
         guard let store else { throw StudyStoreError.unsupportedSchema }
-        try store.transaction(change)
+        try await store.perform { try $0.transaction(change) }
         revision += 1
         exportURLs = []
     }
@@ -171,9 +183,13 @@ final class AppModel {
         }
         var updated = settings
         change(&updated)
+
+        Task {
+            savingData += 1
+            defer { savingData -= 1 }
         let calendarSelectionChanged = updated.selectedCalendarIDs != settings.selectedCalendarIDs
         do {
-            try mutate { state in
+            try await mutate { state in
                 state.settings = updated
                 state.events.append(.init(date: Date(), kind: "settings_changed", source: "app",
                                           detail: String(data: try StudyStore.encoder.encode(updated), encoding: .utf8)))
@@ -197,6 +213,7 @@ final class AppModel {
             }
             publishComplications()
         } catch { message = error.localizedDescription }
+        }
     }
 
     func requestHealth() async {
@@ -303,6 +320,10 @@ final class AppModel {
     }
 
     func foreground() async {
+        await startupTask?.value
+        guard !enteringForeground else { return }
+        enteringForeground = true
+        defer { enteringForeground = false }
         guard !isPreview else { return }
         guard WKApplication.shared().applicationState == .active else { return }
         record(.init(date: Date(), kind: "foreground_entered", source: "lifecycle"))
@@ -334,9 +355,10 @@ final class AppModel {
     private func reconcile() async {
         guard let store else { return }
         do {
-            try store.expire(at: Date())
+            try await store.perform { try $0.expire(at: Date()) }
             let known = await notifications.knownRequestIDs()
-            try mutate { state in
+            if state.prompts.contains(where: { $0.status == .prepared }) {
+            try await mutate { state in
                 for index in state.prompts.indices where state.prompts[index].status == .prepared {
                     let found = known.contains(state.prompts[index].id.uuidString)
                     state.prompts[index].status = found ? .scheduled : .failed
@@ -345,7 +367,8 @@ final class AppModel {
                                               detail: found ? "Request found in notification center" : "Request not found; delivery is unknown"))
                 }
             }
-            try cancelPlannedReminders(reason: "Migrated to delivery-time calendar and movement checks") { _ in true }
+            }
+            try await cancelPlannedReminders(reason: "Migrated to delivery-time calendar and movement checks") { _ in true }
             notifications.remove(state.prompts.filter { [.expired, .cancelled, .failed].contains($0.status) }.map(\.id))
         } catch { message = error.localizedDescription }
     }
@@ -420,7 +443,7 @@ final class AppModel {
         do {
             let checkID = UUID().uuidString
             record(.init(date: Date(), kind: "check_started", source: source, attributes: attributes.merging(["checkID": checkID]) { _, new in new }))
-            try store.expire(at: Date())
+            try await store.perform { try $0.expire(at: Date()) }
             revision += 1
             notifications.remove(state.prompts.filter { $0.status == .expired }.map(\.id))
             let evaluationSettings = settings
@@ -442,7 +465,7 @@ final class AppModel {
             // Re-read calendar after asynchronous health queries before any notification is submitted.
             snapshot = services.calendar.populate(snapshot, settings: evaluationSettings)
             context = snapshot
-            try cancelPlannedReminders(reason: "Future reminders require fresh calendar and movement checks") { _ in true }
+            try await cancelPlannedReminders(reason: "Future reminders require fresh calendar and movement checks") { _ in true }
             let result = OpportunityEngine.evaluate(snapshot, settings: settings, history: state.prompts)
             decision = result
             notificationAccess = await notifications.isAuthorized()
@@ -468,12 +491,12 @@ final class AppModel {
             guard var prompt = RecommendationEngine.makePrompt(context: snapshot, decision: result, settings: settings, history: state.prompts,
                                                                 randomizationSeed: String(seed),
                                                                 deliveryReason: ReminderPlanning.recentBusyEvent(context: snapshot) == nil ? "immediate_opportunity" : "after_busy_event", rng: &rng) else {
-                try mutate { $0.events.append(.init(date: Date(), kind: "no_eligible_options", source: source, detail: "Enable at least one exercise per effort level.")) }
+                try await mutate { $0.events.append(.init(date: Date(), kind: "no_eligible_options", source: source, detail: "Enable at least one exercise per effort level.")) }
                 message = "Enable at least one exercise at each effort level."
                 return
             }
             prompt.opportunityCheckID = checkID
-            try mutate { state in
+            try await mutate { state in
                 state.prompts.append(prompt)
                 state.events.append(.init(date: Date(), kind: "prompt_prepared", promptID: prompt.id, source: source))
             }
@@ -484,7 +507,7 @@ final class AppModel {
                 guard !Task.isCancelled, settings.monitoring, state.prompts.first(where: { $0.id == prompt.id })?.status != .cancelled else {
                     notifications.remove([prompt.id])
                     if Task.isCancelled {
-                        try mutate { state in
+                        try await mutate { state in
                             guard let index = state.prompts.firstIndex(where: { $0.id == prompt.id }),
                                   state.prompts[index].status == .prepared else { return }
                             state.prompts[index].status = .cancelled
@@ -494,7 +517,7 @@ final class AppModel {
                     }
                     return
                 }
-                try mutate { state in
+                try await mutate { state in
                     guard let index = state.prompts.firstIndex(where: { $0.id == prompt.id }) else { return }
                     if state.prompts[index].status == .prepared { state.prompts[index].status = .scheduled }
                     state.prompts[index].scheduledAt = Date()
@@ -503,7 +526,7 @@ final class AppModel {
                 }
             } catch {
                 notifications.remove([prompt.id])
-                try mutate { state in
+                try await mutate { state in
                     guard let index = state.prompts.firstIndex(where: { $0.id == prompt.id }) else { return }
                     state.prompts[index].status = .failed
                     state.events.append(.init(date: Date(), kind: "notification_failed", promptID: prompt.id, source: source, detail: error.localizedDescription))
@@ -516,13 +539,13 @@ final class AppModel {
         }
     }
 
-    private func cancelPlannedReminders(reason: String, where shouldCancel: (ExercisePrompt) -> Bool) throws {
+    private func cancelPlannedReminders(reason: String, where shouldCancel: (ExercisePrompt) -> Bool) async throws {
         let ids = state.prompts.filter {
             [.prepared, .scheduled].contains($0.status) && $0.snoozedUntil == nil && ($0.plannedFor.map { $0 > Date() } ?? false) && shouldCancel($0)
         }.map(\.id)
         guard !ids.isEmpty else { return }
         notifications.remove(ids)
-        try mutate { state in
+        try await mutate { state in
             for index in state.prompts.indices where ids.contains(state.prompts[index].id) {
                 state.prompts[index].status = .cancelled
                 state.prompts[index].cancelledAt = Date()
@@ -534,7 +557,7 @@ final class AppModel {
     private func calendarChanged() async {
         availableCalendars = services.calendar.availableCalendars
         do {
-            try cancelPlannedReminders(reason: "Calendar changed before the planned reminder") { _ in true }
+            try await cancelPlannedReminders(reason: "Calendar changed before the planned reminder") { _ in true }
         } catch { message = "Could not save calendar-plan changes: \(error.localizedDescription)" }
         publishComplications()
         await evaluate(source: "calendar_changed")
@@ -577,6 +600,10 @@ final class AppModel {
     }
 
     func choose(promptID: UUID, exerciseID: String?, source: String = "app", at date: Date = Date()) {
+        Task {
+            savingData += 1
+            defer { savingData -= 1 }
+
         guard !isPreview else { return }
         requestedEffortSelection = false
         defer { publishComplications(); scheduleRefresh() }
@@ -589,7 +616,7 @@ final class AppModel {
             guard let exerciseID else { finish(activePrompt, completed: false); return }
             do {
                 if activePrompt.selectedExerciseID != exerciseID {
-                    try store.reselect(promptID: promptID, exerciseID: exerciseID, at: date)
+                    try await store.perform { try $0.reselect(promptID: promptID, exerciseID: exerciseID, at: date) }
                     _ = exerciseEvidence.stop()
                     notifications.removeExerciseEnd(promptID)
                     revision += 1
@@ -601,7 +628,7 @@ final class AppModel {
             return
         }
         do {
-            let accepted = try store.respond(promptID: promptID, exerciseID: exerciseID, source: source, at: date)
+            let accepted = try await store.perform { try $0.respond(promptID: promptID, exerciseID: exerciseID, source: source, at: date) }
             revision += 1
             exportURLs = []
             if accepted {
@@ -614,6 +641,7 @@ final class AppModel {
             message = error.localizedDescription
             notifications.remove([promptID])
         }
+        }
     }
 
     private func snoozePrompt(id: UUID, minutes: Int, at date: Date) async {
@@ -621,14 +649,14 @@ final class AppModel {
         do {
             var delayed = original
             try delayed.snooze(minutes: minutes, at: date)
-            try mutate { state in
+            try await mutate { state in
                 guard let index = state.prompts.firstIndex(where: { $0.id == id }) else { return }
                 state.prompts[index] = delayed
             }
             do {
                 try await notifications.schedule(delayed)
             } catch {
-                try mutate { state in
+                try await mutate { state in
                     guard let index = state.prompts.firstIndex(where: { $0.id == id }),
                           state.prompts[index].status == .scheduled else { return }
                     state.prompts[index] = original
@@ -661,8 +689,12 @@ final class AppModel {
             navigationRequest = UUID()
             await tickExercise()
         } else if action == UNNotificationDefaultActionIdentifier || action == "movement.choose" {
+            // Show the invitation immediately; persist opening evidence without blocking interaction.
+            requestedEffortSelection = true
+            requestedPromptID = id
+            navigationRequest = UUID()
             do {
-                try mutate { state in
+                try await mutate { state in
                     if let index = state.prompts.firstIndex(where: { $0.id == id }) {
                         state.prompts[index].openedAt = state.prompts[index].openedAt ?? date
                     }
@@ -676,9 +708,6 @@ final class AppModel {
             } catch { message = error.localizedDescription }
             record(.init(date: date, kind: "opened", promptID: id, source: "notification"))
             await reconcile()
-            requestedEffortSelection = true
-            requestedPromptID = id
-            navigationRequest = UUID()
         } else {
             choose(promptID: id, exerciseID: action == UNNotificationDismissActionIdentifier ? nil : action, source: "notification", at: date)
         }
@@ -711,6 +740,8 @@ final class AppModel {
     }
 
     func expireInvitations() {
+        Task {
+
         guard !isPreview else { return }
         guard let store else { return }
         let now = Date()
@@ -718,7 +749,7 @@ final class AppModel {
             ([.scheduled, .prepared].contains($0.status) && $0.expiresAt <= now) || $0.shouldIgnore(at: now)
         }) else { return }
         do {
-            try store.expire(at: now)
+            try await store.perform { try $0.expire(at: now) }
             revision += 1
             exportURLs = []
             let expired = state.prompts.filter { [.ignored, .expired, .cancelled].contains($0.status) }.map(\.id)
@@ -726,14 +757,17 @@ final class AppModel {
             for id in expired { notifications.removeExerciseEnd(id) }
             publishComplications()
         } catch { message = error.localizedDescription }
+        }
     }
 
-    func leaveInvitation(_ id: UUID) -> Bool {
+    func leaveInvitation(_ id: UUID) async -> Bool {
+        savingData += 1
+        defer { savingData -= 1 }
         guard !isPreview else { return true }
         guard let store else { return false }
         do {
             let leavingActiveExercise = activePrompt?.id == id
-            try store.leaveInvitation(promptID: id, at: Date())
+            try await store.perform { try $0.leaveInvitation(promptID: id, at: Date()) }
             if leavingActiveExercise { _ = exerciseEvidence.stop() }
             notifications.remove([id])
             notifications.removeExerciseEnd(id)
@@ -800,6 +834,10 @@ final class AppModel {
     }
 
     func finish(_ prompt: ExercisePrompt, completed: Bool) {
+        Task {
+            savingData += 1
+            defer { savingData -= 1 }
+
         guard !isPreview else { return }
         defer { publishComplications(); scheduleRefresh() }
         do {
@@ -812,24 +850,32 @@ final class AppModel {
                 session?.wristMovementSeconds += wrist.movement
                 session?.wristObservedSeconds += wrist.observed
             }
-            try store.finish(promptID: prompt.id, completed: completed, at: now, session: session)
+            try await store.perform { try $0.finish(promptID: prompt.id, completed: completed, at: now, session: session) }
             notifications.removeExerciseEnd(prompt.id)
             requestedPromptID = nil
             navigationRequest = UUID()
             revision += 1
             exportURLs = []
         } catch { message = error.localizedDescription }
+        }
     }
 
     func prepareExport() {
+        Task {
+            savingData += 1
+            defer { savingData -= 1 }
+
         guard !isPreview else { return }
         do {
             record(.init(date: Date(), kind: "export_prepared", source: "app", detail: "Local files prepared; this does not mean they were shared."))
-            exportURLs = try store?.export(to: FileManager.default.temporaryDirectory.appendingPathComponent("StudyExport")) ?? []
+            exportURLs = try await StudyStore.exportState(state, to: FileManager.default.temporaryDirectory.appendingPathComponent("StudyExport"))
         } catch { message = "Export failed: \(error.localizedDescription)" }
+        }
     }
 
     private func exportForPhone() {
+        Task {
+
         guard let store else {
             CompanionConnection.shared.send(.exportError("Study data is unavailable on the watch."))
             return
@@ -839,11 +885,12 @@ final class AppModel {
             let directory = FileManager.default.temporaryDirectory.appendingPathComponent("PhoneExports/\(batch)")
             record(.init(date: Date(), kind: "companion_export_prepared", source: "companion",
                          detail: "Files queued for iPhone; this does not confirm receipt or sharing."))
-            for url in try store.export(to: directory) {
+            for url in try await StudyStore.exportState(store.state, to: directory) {
                 CompanionConnection.shared.transferFile(url, metadata: ["batch": batch, "name": url.lastPathComponent,
                     "participantID": state.participantID.uuidString])
             }
         } catch { CompanionConnection.shared.send(.exportError(error.localizedDescription)) }
+        }
     }
 
     private func setPendingRefresh(_ request: RefreshRequest?) {
@@ -893,6 +940,7 @@ final class AppModel {
     }
 
     func backgroundRefresh(userInfo: (any NSSecureCoding)?) async {
+        await startupTask?.value
         guard !isPreview else { return }
         let started = Date()
         var attributes = userInfo as? [String: String] ?? [:]
@@ -922,6 +970,7 @@ final class AppModel {
                                            completedToday: state.prompts.filter { $0.completedAt.map { Calendar.current.isDate($0, inSameDayAs: now) } ?? false }.count,
                                            invitationExpiresAt: invitation?.expiresAt, invitationStartsAt: invitation?.plannedFor)
         let weekStart = Calendar.current.date(byAdding: .day, value: -7, to: now) ?? now
+        snapshot.missedHistory = summaryDays(at: now).map { .init(date: $0.date, value: $0.missed.map(Double.init)) }
         snapshot.stepHistory = context?.stepHistory
         snapshot.breakCompletions = state.prompts.compactMap(\.completedAt).filter { $0 > weekStart && $0 <= now }
         snapshot.effortCompletions = state.prompts.compactMap { prompt in

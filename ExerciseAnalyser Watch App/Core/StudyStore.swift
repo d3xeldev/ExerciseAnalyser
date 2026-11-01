@@ -16,27 +16,49 @@ enum StudyStoreError: LocalizedError {
 
 // All callers serialize mutations on the main actor in the watch app.
 // Write-before-publish ensures a failed save cannot silently lose a response.
-final class StudyStore {
+nonisolated final class StudyStore {
     private(set) var state: StudyState
     let url: URL
     var sessionID: UUID?
     private var mutationVersion = 0
+    private var memoryOnly = false
+
+    private init(state: StudyState, url: URL) {
+        self.state = state
+        self.url = url
+        memoryOnly = true
+    }
+
+    @concurrent
+    static func loadState(from url: URL) async throws -> StudyState {
+        try StudyStore(url: url).state
+    }
+
+    static func loaded(_ state: StudyState, url: URL) -> StudyStore {
+        let store = StudyStore(state: state, url: url)
+        store.memoryOnly = false
+        return store
+    }
     private var journalURL: URL { url.appendingPathExtension("events.jsonl") }
 
     init(url: URL) throws {
         self.url = url
         if FileManager.default.fileExists(atPath: url.path) {
-            state = try Self.decoder.decode(StudyState.self, from: Data(contentsOf: url))
+            state = try Self.decoder.decode(StudyState.self, from: Data(contentsOf: url, options: .mappedIfSafe))
             guard state.schemaVersion == 1 else { throw StudyStoreError.unsupportedSchema }
         } else {
             state = StudyState()
         }
         if FileManager.default.fileExists(atPath: journalURL.path) {
-            let data = try Data(contentsOf: journalURL)
+            let reader = try FileHandle(forReadingFrom: journalURL)
+            defer { try? reader.close() }
+            let length = try reader.seekToEnd()
+            try reader.seek(toOffset: 0)
             var validLength = 0
+            let decoder = Self.decoder
             // Only a final partial line can be an interrupted append. Complete malformed records fail closed.
-            for line in data.split(separator: 10, omittingEmptySubsequences: false).dropLast() {
-                let event = try Self.decoder.decode(StudyEvent.self, from: Data(line))
+            try Self.readLines(reader) { line in
+                let event = try decoder.decode(StudyEvent.self, from: line)
                 guard let sequence = event.sequence, sequence > 0, event.participantID == state.participantID else { throw StudyStoreError.unsupportedSchema }
                 if sequence > state.events.count {
                     guard sequence == state.events.count + 1 else {
@@ -53,12 +75,24 @@ final class StudyStore {
                 }
                 validLength += line.count + 1
             }
-            if validLength < data.count {
+            if validLength < length {
                 let handle = try FileHandle(forWritingTo: journalURL)
                 defer { try? handle.close() }
                 try handle.truncate(atOffset: UInt64(validLength))
             }
         }
+    }
+
+    private static func readLines(_ handle: FileHandle, consume: (Data) throws -> Void) throws {
+        var pending = Data()
+        while let chunk = try handle.read(upToCount: 64 * 1024), !chunk.isEmpty {
+            pending.append(chunk)
+            while let newline = pending.firstIndex(of: 10) {
+                try autoreleasepool { try consume(Data(pending[..<newline])) }
+                pending.removeSubrange(...newline)
+            }
+        }
+        // An unterminated tail is an interrupted append, never a committed record.
     }
 
     func appendEvent(_ original: StudyEvent) throws {
@@ -136,63 +170,93 @@ final class StudyStore {
             if next.events[index].sessionID == nil { next.events[index].sessionID = sessionID }
             if next.events[index].settings == nil { next.events[index].settings = next.settings }
         }
-        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-        let data = try Self.encoder.encode(next)
-        #if os(watchOS) || os(iOS)
-        try data.write(to: url, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
-        #else
-        try data.write(to: url, options: .atomic)
-        #endif
+        if !memoryOnly {
+            let temporary = url.deletingLastPathComponent().appendingPathComponent(UUID().uuidString + ".pending")
+            defer { try? FileManager.default.removeItem(at: temporary) }
+            try Self.writeSnapshot(next, to: temporary)
+            try commit(temporary)
+        }
         state = next
         mutationVersion += 1
         // The snapshot is committed first. Replay skips its sequence numbers if cleanup is interrupted.
         // Remove atomically instead of truncating a file that could contain a partially written line.
-        try? FileManager.default.removeItem(at: journalURL)
+        if !memoryOnly { try? FileManager.default.removeItem(at: journalURL) }
+    }
+
+    private func commit(_ temporary: URL) throws {
+        if FileManager.default.fileExists(atPath: url.path) {
+            _ = try FileManager.default.replaceItemAt(url, withItemAt: temporary)
+        } else {
+            try FileManager.default.moveItem(at: temporary, to: url)
+        }
+    }
+
+    // Operations may be retried after an incoming journal event. Keep them free of external side effects.
+    @MainActor
+    func perform<T>(_ operation: (StudyStore) throws -> T) async throws -> T {
+        while true {
+            try Task.checkCancellation()
+            let version = mutationVersion
+            let draft = StudyStore(state: state, url: url)
+            draft.sessionID = sessionID
+            let result = try operation(draft)
+            guard draft.mutationVersion > 0 else { return result }
+            let temporary = try await Self.prepareSnapshot(draft.state, beside: url)
+            defer { try? FileManager.default.removeItem(at: temporary) }
+            try Task.checkCancellation()
+            guard version == mutationVersion else { continue }
+            try commit(temporary)
+            state = draft.state
+            mutationVersion += 1
+            try? FileManager.default.removeItem(at: journalURL)
+            return result
+        }
     }
 
     @MainActor
     func appendManualPrompt(_ prompt: ExercisePrompt) async throws {
-        // Prepare a complete durable snapshot off the UI executor. If another callback
-        // changes the store while suspended, retry against its latest state.
-        while true {
-            try Task.checkCancellation()
-            let version = mutationVersion
-            var next = state
-            next.prompts.append(prompt)
-            var event = StudyEvent(date: prompt.createdAt, kind: "manual_intervention", promptID: prompt.id, source: "app")
-            event.sequence = next.events.count + 1
-            event.participantID = next.participantID
-            event.sessionID = sessionID
-            event.settings = next.settings
-            next.events.append(event)
-            let temporaryURL = try await Self.prepareSnapshot(next, beside: url)
-            defer { try? FileManager.default.removeItem(at: temporaryURL) }
-            try Task.checkCancellation()
-            guard version == mutationVersion else { continue }
-            // Only the atomic rename and publication happen on the main actor.
-            if FileManager.default.fileExists(atPath: url.path) {
-                _ = try FileManager.default.replaceItemAt(url, withItemAt: temporaryURL)
-            } else {
-                try FileManager.default.moveItem(at: temporaryURL, to: url)
+        try await perform { draft in
+            try draft.transaction {
+                $0.prompts.append(prompt)
+                $0.events.append(.init(date: prompt.createdAt, kind: "manual_intervention", promptID: prompt.id, source: "app"))
             }
-            state = next
-            mutationVersion += 1
-            try? FileManager.default.removeItem(at: journalURL)
-            return
         }
+    }
+
+    // Encode one record at a time, bounding encoder scratch memory independently of history size.
+    nonisolated private static func writeSnapshot(_ state: StudyState, to url: URL) throws {
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        #if os(watchOS) || os(iOS)
+        try Data().write(to: url, options: .completeFileProtectionUntilFirstUserAuthentication)
+        #else
+        try Data().write(to: url)
+        #endif
+        let handle = try FileHandle(forWritingTo: url)
+        defer { try? handle.close() }
+        let encoder = Self.encoder
+        func write(_ text: String) throws { try handle.write(contentsOf: Data(text.utf8)) }
+        try write("{\"schemaVersion\":\(state.schemaVersion),\"participantID\":")
+        try handle.write(contentsOf: encoder.encode(state.participantID))
+        try write(",\"settings\":")
+        try handle.write(contentsOf: encoder.encode(state.settings))
+        try write(",\"prompts\":[")
+        for (index, prompt) in state.prompts.enumerated() {
+            if index > 0 { try write(",") }
+            try autoreleasepool { try handle.write(contentsOf: encoder.encode(prompt)) }
+        }
+        try write("],\"events\":[")
+        for (index, event) in state.events.enumerated() {
+            if index > 0 { try write(",") }
+            try autoreleasepool { try handle.write(contentsOf: encoder.encode(event)) }
+        }
+        try write("]}")
     }
 
     @concurrent
     nonisolated private static func prepareSnapshot(_ state: StudyState, beside url: URL) async throws -> URL {
         let temporaryURL = url.deletingLastPathComponent().appendingPathComponent(UUID().uuidString + ".pending")
         do {
-            try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-            let data = try encoder.encode(state)
-            #if os(watchOS) || os(iOS)
-            try data.write(to: temporaryURL, options: .completeFileProtectionUntilFirstUserAuthentication)
-            #else
-            try data.write(to: temporaryURL)
-            #endif
+            try writeSnapshot(state, to: temporaryURL)
             return temporaryURL
         } catch {
             try? FileManager.default.removeItem(at: temporaryURL)
@@ -290,11 +354,16 @@ final class StudyStore {
         }
     }
 
+    @concurrent
+    static func exportState(_ state: StudyState, to directory: URL) async throws -> [URL] {
+        try StudyStore(state: state, url: directory.appendingPathComponent("unused")).export(to: directory)
+    }
+
     func export(to directory: URL) throws -> [URL] {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let json = directory.appendingPathComponent("exercise-study.json")
         let csv = directory.appendingPathComponent("exercise-choices.csv")
-        try Self.encoder.encode(state).write(to: json, options: .atomic)
+        try Self.writeSnapshot(state, to: json)
         let header = "participant_id,prompt_id,created_at,policy,method,method_probability,slate_assignment_probability,randomization_seed,effort,exercise_id,option_probability,selected,status,responded_at,completed_at,abandoned_at,opportunity_score,response_latency_seconds,planned_for,delivery_reason,notification_requested_at,cancelled_at"
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
@@ -315,10 +384,17 @@ final class StudyStore {
         }
         try (rows.joined(separator: "\n") + "\n").write(to: csv, atomically: true, encoding: .utf8)
         let eventsURL = directory.appendingPathComponent("exercise-events.jsonl")
-        let eventLines = try state.events.map { event in
-            String(decoding: try Self.encoder.encode(event), as: UTF8.self)
-        }.joined(separator: "\n")
-        try (eventLines + (eventLines.isEmpty ? "" : "\n")).write(to: eventsURL, atomically: true, encoding: .utf8)
+        try Data().write(to: eventsURL)
+        let eventHandle = try FileHandle(forWritingTo: eventsURL)
+        defer { try? eventHandle.close() }
+        let encoder = Self.encoder
+        for event in state.events {
+            try autoreleasepool {
+                var data = try encoder.encode(event)
+                data.append(10)
+                try eventHandle.write(contentsOf: data)
+            }
+        }
         return [json, csv, eventsURL]
     }
 }

@@ -223,7 +223,8 @@ extension PhoneModel {
                       high: missingSignals || emptyDay ? 0 : (offset + 6) % 2, missed: emptyDay ? 0 : (offset + 8) % 3,
                       selections: .init(low: emptyDay ? 0 : (selectedEffort == "easy" ? 3 : 1),
                                         moderate: emptyDay ? 0 : (selectedEffort == "moderate" ? 3 : 1),
-                                        high: emptyDay ? 0 : (selectedEffort == "challenge" ? 3 : 1)))
+                                        high: emptyDay ? 0 : (selectedEffort == "challenge" ? 3 : 1)),
+                      exerciseMinutes: missingSignals || offset == -3 ? nil : Double(24 + offset * 3))
             },
             prompts: [
                 .init(id: UUID(), date: now.addingTimeInterval(-120), outcome: "Scheduled", method: "Personalized", isManual: false,

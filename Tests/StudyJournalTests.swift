@@ -110,6 +110,28 @@ final class StudyJournalTests: XCTestCase {
         }
     }
 
+    @MainActor
+    func testAsyncTransactionKeepsEventsArrivingDuringSave() async throws {
+        let url = location()
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let store = try StudyStore(url: url)
+        try store.transaction {
+            for _ in 0..<2_000 { $0.events.append(.init(date: Date(), kind: "history", source: "test")) }
+        }
+        let saving = Task {
+            try await store.perform { draft in
+                try draft.transaction { $0.settings.cooldownMinutes = 37 }
+            }
+        }
+        await Task.yield()
+        try store.appendEvent(.init(date: Date(), kind: "during_save", source: "test"))
+        try await saving.value
+        let restored = try await StudyStore.loadState(from: url)
+        XCTAssertEqual(restored.settings.cooldownMinutes, 37)
+        XCTAssertEqual(restored.events.count, 2_001)
+        XCTAssertEqual(restored.events.last?.kind, "during_save")
+    }
+
     private func location() -> URL {
         FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString).appendingPathComponent("study.json")
     }

@@ -32,6 +32,7 @@ nonisolated struct CompanionSnapshot: Codable, Sendable {
         let high: Int
         var missed: Int? = nil
         var selections: EffortCounts? = nil
+        var exerciseMinutes: Double? = nil
         var id: Date { date }
         var completed: Int { low + moderate + high }
     }

@@ -1,11 +1,10 @@
 import Foundation
 
 extension AppModel {
-    func publishPhoneSnapshot() {
-        let now = Date()
+    func summaryDays(at now: Date) -> [CompanionSnapshot.Day] {
         let calendar = Calendar.current
         let today = calendar.startOfDay(for: now)
-        let days: [CompanionSnapshot.Day] = (-6...0).compactMap { offset in
+        return (-6...0).compactMap { offset in
             guard let day = calendar.date(byAdding: .day, value: offset, to: today) else { return nil }
             let completed = state.prompts.filter { $0.completedAt.map { calendar.isDate($0, inSameDayAs: day) && $0 <= now } ?? false }
             func count(_ effort: Effort) -> Int {
@@ -15,8 +14,14 @@ extension AppModel {
             let currentSteps = context.flatMap { calendar.isDate($0.date, inSameDayAs: day) ? $0.stepsToday : nil }
             return .init(date: day, steps: currentSteps ?? recordedSteps, low: count(.easy), moderate: count(.moderate), high: count(.challenge),
                          missed: CompanionSummary.missedCount(in: state.prompts, on: day, asOf: now, calendar: calendar),
-                         selections: CompanionSummary.selectionCounts(in: state.prompts, on: day, asOf: now, calendar: calendar))
+                         selections: CompanionSummary.selectionCounts(in: state.prompts, on: day, asOf: now, calendar: calendar),
+                         exerciseMinutes: context?.exerciseHistory?.last { calendar.isDate($0.date, inSameDayAs: day) }?.value)
         }
+    }
+
+    func publishPhoneSnapshot() {
+        let now = Date()
+        let days = summaryDays(at: now)
         let prompts: [CompanionSnapshot.Prompt] = state.prompts.suffix(30).reversed().map { prompt in
             .init(id: prompt.id, date: prompt.createdAt,
                   outcome: prompt.completedAt != nil ? "Completed" : prompt.abandonedAt != nil ? "Abandoned" : prompt.status.rawValue.capitalized,

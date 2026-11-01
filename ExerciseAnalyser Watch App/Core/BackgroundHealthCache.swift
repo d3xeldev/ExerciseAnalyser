@@ -21,12 +21,14 @@ struct CachedHealthValue<Value: Codable>: Codable {
 // Only slow-changing aggregates belong here. Wear, movement, workouts and calendar are read every time.
 struct BackgroundHealthCache: Codable {
     var stepHistory: CachedHealthValue<[ComplicationSnapshot.DailyTotal]>?
+    var exerciseHistory: CachedHealthValue<[ComplicationSnapshot.DailyTotal]>?
     var restingHeartRate: CachedHealthValue<Measurement>?
     var sleepHours: CachedHealthValue<Double>?
 
     func available(at now: Date, calendar: Calendar = .current) -> Self {
         var result = self
         if stepHistory?.usable(at: now, calendar: calendar) != true { result.stepHistory = nil }
+        if exerciseHistory?.usable(at: now, calendar: calendar) != true { result.exerciseHistory = nil }
         if restingHeartRate?.usable(at: now, calendar: calendar) != true { result.restingHeartRate = nil }
         if sleepHours?.usable(at: now, calendar: calendar) != true { result.sleepHours = nil }
         return result

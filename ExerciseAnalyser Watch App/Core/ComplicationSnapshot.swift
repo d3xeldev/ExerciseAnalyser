@@ -4,12 +4,14 @@ enum ComplicationKind: String, CaseIterable, Sendable {
     case moment = "MoveMoment.Status"
     case activity = "MoveMoment.Activity"
     case breaks = "MoveMoment.Breaks"
+    case missed = "MoveMoment.Missed"
 
     var destination: String {
         switch self {
         case .moment: "moment"
         case .activity: "activity"
         case .breaks: "breaks"
+        case .missed: "missed"
         }
     }
 
@@ -40,6 +42,7 @@ struct ComplicationSnapshot: Codable, Equatable, Sendable {
 
     var stepHistory: [DailyTotal]?
     var breakCompletions: [Date]?
+    var missedHistory: [DailyTotal]?
 
     struct DailyTotal: Codable, Equatable, Identifiable, Sendable {
         let date: Date
@@ -65,6 +68,21 @@ struct ComplicationSnapshot: Codable, Equatable, Sendable {
             let count = dates.filter { $0 <= now && calendar.isDate($0, inSameDayAs: day.date) }.count
             return DailyTotal(date: day.date, value: dataAvailable ? Double(count) : nil)
         }
+    }
+
+    func weeklyMissedDays(at now: Date, calendar: Calendar = .current) -> [DailyTotal] {
+        dailyEffortCounts(at: now, calendar: calendar).map { day in
+            let recorded = dataAvailable && now >= generatedAt ? missedHistory?.last {
+                calendar.isDate($0.date, inSameDayAs: day.date) && $0.date <= now
+            } : nil
+            return DailyTotal(date: day.date, value: recorded?.value)
+        }
+    }
+
+    func missedToday(at now: Date, calendar: Calendar = .current) -> Int? {
+        guard calendar.isDate(generatedAt, inSameDayAs: now),
+              let value = weeklyMissedDays(at: now, calendar: calendar).last?.value else { return nil }
+        return Int(value)
     }
 
     struct EffortCompletion: Codable, Equatable, Sendable {
