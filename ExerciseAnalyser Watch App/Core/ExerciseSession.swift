@@ -109,7 +109,7 @@ extension Exercise {
 }
 
 // Reserve ten minutes for an unfinished break before treating it as ignored.
-extension ExercisePrompt {
+nonisolated extension ExercisePrompt {
     var activeUntil: Date {
         let exercise = options.first { $0.id == selectedExerciseID }?.exercise
         let session = exerciseSession

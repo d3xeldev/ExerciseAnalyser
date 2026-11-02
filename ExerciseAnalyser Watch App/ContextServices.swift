@@ -34,10 +34,11 @@ final class HealthService {
     }
 
     private func invalidateCache(for identifier: String? = nil) {
-        if let identifier, ![HKQuantityTypeIdentifier.stepCount.rawValue,
+        if let identifier, ![HKQuantityTypeIdentifier.stepCount.rawValue, HKQuantityTypeIdentifier.appleExerciseTime.rawValue,
             HKQuantityTypeIdentifier.restingHeartRate.rawValue, HKCategoryTypeIdentifier.sleepAnalysis.rawValue].contains(identifier) { return }
         cacheRevision += 1
         if identifier == nil || identifier == HKQuantityTypeIdentifier.stepCount.rawValue { cache.stepHistory = nil }
+        if identifier == nil || identifier == HKQuantityTypeIdentifier.appleExerciseTime.rawValue { cache.exerciseHistory = nil }
         if identifier == nil || identifier == HKQuantityTypeIdentifier.restingHeartRate.rawValue { cache.restingHeartRate = nil }
         if identifier == nil || identifier == HKCategoryTypeIdentifier.sleepAnalysis.rawValue { cache.sleepHours = nil }
         saveCache()
@@ -155,12 +156,12 @@ final class HealthService {
         }
     }
 
-    private func dailySteps(to now: Date) async throws -> [ComplicationSnapshot.DailyTotal] {
+    private func dailyTotals(_ identifier: HKQuantityTypeIdentifier, unit: HKUnit, to now: Date) async throws -> [ComplicationSnapshot.DailyTotal] {
         let calendar = Calendar.current
         let today = calendar.startOfDay(for: now)
         let start = calendar.date(byAdding: .day, value: -6, to: today)!
         return try await execute { ticket in
-            let query = HKStatisticsCollectionQuery(quantityType: HKQuantityType(.stepCount),
+            let query = HKStatisticsCollectionQuery(quantityType: HKQuantityType(identifier),
                 quantitySamplePredicate: HKQuery.predicateForSamples(withStart: start, end: now, options: .strictStartDate),
                 options: .cumulativeSum, anchorDate: today, intervalComponents: DateComponents(day: 1))
             query.initialResultsHandler = { _, collection, error in
@@ -168,7 +169,7 @@ final class HealthService {
                     if let error { ticket.finish(.failure(error)); return }
                     var days: [ComplicationSnapshot.DailyTotal] = []
                     collection?.enumerateStatistics(from: start, to: now) { statistics, _ in
-                        days.append(.init(date: statistics.startDate, value: statistics.sumQuantity()?.doubleValue(for: .count())))
+                        days.append(.init(date: statistics.startDate, value: statistics.sumQuantity()?.doubleValue(for: unit)))
                     }
                     ticket.finish(.success(days))
                 }
@@ -194,16 +195,17 @@ final class HealthService {
         let cached = lightweight ? cache.available(at: now) : BackgroundHealthCache()
         let revision = cacheRevision
         let readStepHistory = cached.stepHistory == nil
+        let readExerciseHistory = cached.exerciseHistory == nil
         let readRestingHeartRate = cached.restingHeartRate == nil
         let readSleep = cached.sleepHours == nil
         var recentStepsNoData = false
         var inferredRecentSteps = false
         // Run independent queries together to stay within the watch's short execution window.
-        async let steps = readStepHistory ? dailySteps(to: now) : []
+        async let steps = readStepHistory ? dailyTotals(.stepCount, unit: .count(), to: now) : []
         async let currentSteps = readStepHistory ? nil : sum(.stepCount, unit: .count(), from: today, to: now)
         async let recentSteps = sum(.stepCount, unit: .count(), from: now.addingTimeInterval(-15 * 60), to: now)
         async let energy = lightweight ? nil : sum(.activeEnergyBurned, unit: .kilocalorie(), from: today, to: now)
-        async let exercise = lightweight ? nil : sum(.appleExerciseTime, unit: .minute(), from: today, to: now)
+        async let exercise = readExerciseHistory ? dailyTotals(.appleExerciseTime, unit: .minute(), to: now) : []
         async let stand = lightweight ? nil : sum(.appleStandTime, unit: .minute(), from: today, to: now)
         async let distance = lightweight ? nil : sum(.distanceWalkingRunning, unit: .meter(), from: today, to: now)
         async let hr = latest(.heartRate, unit: HKUnit.count().unitDivided(by: .minute()), from: now.addingTimeInterval(-3600), to: now)
@@ -232,7 +234,15 @@ final class HealthService {
             context.issues.append("Recent steps query: \(failure.domain) / \(failure.code): \(failure.localizedDescription)")
         }
         do { context.activeEnergy = try await energy } catch { context.issues.append("Active energy unavailable") }
-        do { context.exerciseMinutes = try await exercise } catch { context.issues.append("Exercise minutes unavailable") }
+        do {
+            // Reuse weekly totals between refreshes without adding exercise to background decisions.
+            if let history = cached.exerciseHistory {
+                context.exerciseHistory = history.value
+            } else {
+                context.exerciseHistory = try await exercise
+            }
+            context.exerciseMinutes = lightweight ? nil : context.exerciseHistory?.last?.value
+        } catch { context.issues.append("Exercise minutes unavailable") }
         do { context.standMinutes = try await stand } catch { context.issues.append("Stand minutes unavailable") }
         do { context.distanceMeters = try await distance } catch { context.issues.append("Distance unavailable") }
         do { context.heartRate = try await hr } catch { context.issues.append("Heart rate unavailable") }
@@ -310,6 +320,13 @@ final class HealthService {
         context.signalProvenance["stepHistory"] = cached.stepHistory?.cachedProvenance
             ?? .init(source: "HealthKit", unit: "count", windowStart: Calendar.current.date(byAdding: .day, value: -6, to: today)!,
                      windowEnd: now, sampleDate: nil, availability: context.issues.contains("Daily steps unavailable") ? "query_failed" : "available")
+        if let history = cached.exerciseHistory {
+            context.signalProvenance["exerciseHistory"] = history.cachedProvenance
+        } else {
+            context.signalProvenance["exerciseHistory"] = .init(source: "HealthKit", unit: "min",
+                windowStart: Calendar.current.date(byAdding: .day, value: -6, to: today)!, windowEnd: now, sampleDate: nil,
+                availability: context.issues.contains("Exercise minutes unavailable") ? "query_failed" : "available")
+        }
         if let resting = cached.restingHeartRate { context.signalProvenance["restingHeartRate"] = resting.cachedProvenance }
         if let sleep = cached.sleepHours { context.signalProvenance["sleepHours"] = sleep.cachedProvenance }
         // Never extend a cache hit's lifetime or repopulate a cache invalidated during these queries.
@@ -318,6 +335,11 @@ final class HealthService {
             if cached.stepHistory == nil {
                 cache.stepHistory = context.stepHistory.map {
                     .init(value: $0, collectedAt: now, timeZoneIdentifier: context.timeZoneIdentifier, provenance: context.signalProvenance["stepHistory"]!)
+                }
+            }
+            if readExerciseHistory {
+                cache.exerciseHistory = context.exerciseHistory.map {
+                    .init(value: $0, collectedAt: now, timeZoneIdentifier: context.timeZoneIdentifier, provenance: context.signalProvenance["exerciseHistory"]!)
                 }
             }
             if cached.restingHeartRate == nil {

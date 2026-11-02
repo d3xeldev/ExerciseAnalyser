@@ -54,6 +54,24 @@ final class BackgroundHealthCacheTests: XCTestCase {
         XCTAssertEqual(available.restingHeartRate?.cachedProvenance.sampleDate, now)
     }
 
+    func testExerciseHistoryRemainsOptionalAndExpiresWithoutExtendingItsLifetime() throws {
+        let legacy = try JSONDecoder().decode(BackgroundHealthCache.self, from: Data("{}".utf8))
+        XCTAssertNil(legacy.exerciseHistory)
+        let history = CachedHealthValue(value: [ComplicationSnapshot.DailyTotal(date: now, value: 24)],
+            collectedAt: now, timeZoneIdentifier: calendar.timeZone.identifier,
+            provenance: .init(source: "HealthKit", unit: "min", windowStart: now.addingTimeInterval(-604800),
+                              windowEnd: now, sampleDate: nil, availability: "available"))
+        let cache = BackgroundHealthCache(exerciseHistory: history)
+        let restored = try JSONDecoder().decode(BackgroundHealthCache.self, from: JSONEncoder().encode(cache))
+        let hit = restored.available(at: now.addingTimeInterval(900), calendar: calendar).exerciseHistory
+        XCTAssertEqual(hit?.value.first?.value, 24)
+        XCTAssertEqual(hit?.collectedAt, now)
+        XCTAssertNil(restored.available(at: now.addingTimeInterval(3600), calendar: calendar).exerciseHistory)
+        var changedZone = calendar
+        changedZone.timeZone = TimeZone(secondsFromGMT: 3600)!
+        XCTAssertNil(restored.available(at: now, calendar: changedZone).exerciseHistory)
+    }
+
     func testNewDefaultDoesNotOverwriteSavedReminderLimit() throws {
         XCTAssertEqual(Settings().dailyLimit, 6)
         var saved = Settings()
