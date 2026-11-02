@@ -39,6 +39,34 @@ nonisolated final class StudyStore {
         store.memoryOnly = false
         return store
     }
+    private var settingsJournalURL: URL { url.appendingPathExtension("settings") }
+
+    private struct SettingsCommit: Codable, Sendable {
+        let settings: Settings
+        let cancelledIDs: [UUID]
+        let events: [StudyEvent]
+    }
+
+    private func replay(_ commit: SettingsCommit) throws {
+        guard let first = commit.events.first, let last = commit.events.last,
+              let firstSequence = first.sequence, let lastSequence = last.sequence,
+              commit.events.enumerated().allSatisfy({ index, event in
+                  event.participantID == state.participantID && event.sequence == firstSequence + index
+              }) else { throw StudyStoreError.unsupportedSchema }
+        if lastSequence <= state.events.count { return }
+        guard firstSequence == state.events.count + 1,
+              commit.cancelledIDs.allSatisfy({ id in state.prompts.contains { $0.id == id } }) else {
+            throw StudyStoreError.unsupportedSchema
+        }
+        state.settings = commit.settings
+        let cancelled = Set(commit.cancelledIDs)
+        for index in state.prompts.indices where cancelled.contains(state.prompts[index].id) {
+            state.prompts[index].status = .cancelled
+            state.prompts[index].cancelledAt = first.date
+        }
+        state.events.append(contentsOf: commit.events)
+    }
+
     private var journalURL: URL { url.appendingPathExtension("events.jsonl") }
 
     init(url: URL) throws {
@@ -49,6 +77,14 @@ nonisolated final class StudyStore {
         } else {
             state = StudyState()
         }
+        // Settings commits are immutable, atomically installed records. Merge them with
+        // event journal records by sequence; a completed snapshot makes old records redundant.
+        let settingsFiles = FileManager.default.fileExists(atPath: settingsJournalURL.path)
+            ? try FileManager.default.contentsOfDirectory(at: settingsJournalURL, includingPropertiesForKeys: nil) : []
+        let commits = try settingsFiles.filter { $0.pathExtension == "json" }.map {
+            try Self.decoder.decode(SettingsCommit.self, from: Data(contentsOf: $0))
+        }.sorted { ($0.events.first?.sequence ?? 0) < ($1.events.first?.sequence ?? 0) }
+        var commitIndex = 0
         if FileManager.default.fileExists(atPath: journalURL.path) {
             let reader = try FileHandle(forReadingFrom: journalURL)
             defer { try? reader.close() }
@@ -60,6 +96,10 @@ nonisolated final class StudyStore {
             try Self.readLines(reader) { line in
                 let event = try decoder.decode(StudyEvent.self, from: line)
                 guard let sequence = event.sequence, sequence > 0, event.participantID == state.participantID else { throw StudyStoreError.unsupportedSchema }
+                while commitIndex < commits.count, (commits[commitIndex].events.first?.sequence ?? 0) < sequence {
+                    try replay(commits[commitIndex])
+                    commitIndex += 1
+                }
                 if sequence > state.events.count {
                     guard sequence == state.events.count + 1 else {
                         throw StudyStoreError.unsupportedSchema
@@ -81,6 +121,7 @@ nonisolated final class StudyStore {
                 try handle.truncate(atOffset: UInt64(validLength))
             }
         }
+        for commit in commits.dropFirst(commitIndex) { try replay(commit) }
     }
 
     private static func readLines(_ handle: FileHandle, consume: (Data) throws -> Void) throws {
@@ -180,7 +221,10 @@ nonisolated final class StudyStore {
         mutationVersion += 1
         // The snapshot is committed first. Replay skips its sequence numbers if cleanup is interrupted.
         // Remove atomically instead of truncating a file that could contain a partially written line.
-        if !memoryOnly { try? FileManager.default.removeItem(at: journalURL) }
+        if !memoryOnly {
+            try? FileManager.default.removeItem(at: journalURL)
+            try? FileManager.default.removeItem(at: settingsJournalURL)
+        }
     }
 
     private func commit(_ temporary: URL) throws {
@@ -209,7 +253,63 @@ nonisolated final class StudyStore {
             state = draft.state
             mutationVersion += 1
             try? FileManager.default.removeItem(at: journalURL)
+            try? FileManager.default.removeItem(at: settingsJournalURL)
             return result
+        }
+    }
+
+    @MainActor
+    func saveSettings(_ settings: Settings, at date: Date = Date()) async throws {
+        // A new installation must establish its identity before replayable records exist.
+        if !FileManager.default.fileExists(atPath: url.path) {
+            try await perform { try $0.transaction { _ in } }
+        }
+        while true {
+            try Task.checkCancellation()
+            let version = mutationVersion
+            let cancelledIDs = state.prompts.filter { [.prepared, .scheduled].contains($0.status) }.map(\.id)
+            let prepared = try await Self.prepareSettings(settings, cancelledIDs: cancelledIDs,
+                firstSequence: state.events.count + 1, participantID: state.participantID,
+                sessionID: sessionID, date: date, beside: url)
+            defer { try? FileManager.default.removeItem(at: prepared.url) }
+            try Task.checkCancellation()
+            guard version == mutationVersion else { continue }
+            // Only the small atomic installation and state publication run on the UI actor.
+            try FileManager.default.moveItem(at: prepared.url,
+                to: settingsJournalURL.appendingPathComponent(UUID().uuidString + ".json"))
+            try replay(prepared.commit)
+            mutationVersion += 1
+            return
+        }
+    }
+
+    @concurrent
+    private static func prepareSettings(_ settings: Settings, cancelledIDs: [UUID], firstSequence: Int,
+                                        participantID: UUID, sessionID: UUID?, date: Date, beside url: URL) async throws -> (url: URL, commit: SettingsCommit) {
+        let encoder = Self.encoder
+        var events = [StudyEvent(date: date, kind: "settings_changed", source: "app",
+            detail: String(decoding: try encoder.encode(settings), as: UTF8.self))]
+        events += cancelledIDs.map { .init(date: date, kind: "cancelled_settings_changed", promptID: $0, source: "app") }
+        for index in events.indices {
+            events[index].sequence = firstSequence + index
+            events[index].participantID = participantID
+            events[index].sessionID = sessionID
+            events[index].settings = settings
+        }
+        let commit = SettingsCommit(settings: settings, cancelledIDs: cancelledIDs, events: events)
+        let temporary = url.deletingLastPathComponent().appendingPathComponent(UUID().uuidString + ".pending")
+        do {
+            try FileManager.default.createDirectory(at: url.appendingPathExtension("settings"), withIntermediateDirectories: true)
+            let data = try encoder.encode(commit)
+            #if os(watchOS) || os(iOS)
+            try data.write(to: temporary, options: .completeFileProtectionUntilFirstUserAuthentication)
+            #else
+            try data.write(to: temporary)
+            #endif
+            return (temporary, commit)
+        } catch {
+            try? FileManager.default.removeItem(at: temporary)
+            throw error
         }
     }
 

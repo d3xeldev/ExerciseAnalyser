@@ -50,7 +50,9 @@ final class AppModel {
 
     var state: StudyState { _ = revision; return previewState ?? store?.state ?? emptyState }
     var dataAvailable: Bool { previewState != nil || store != nil }
-    var settings: Settings { state.settings }
+    private var pendingSettings: Settings?
+    @ObservationIgnored private var settingsSaveTask: Task<Void, Never>?
+    var settings: Settings { pendingSettings ?? state.settings }
     var currentPrompt: ExercisePrompt? {
         state.prompts.last { $0.isAvailable(at: Date()) }
     }
@@ -181,39 +183,47 @@ final class AppModel {
             }
             return
         }
+        guard store != nil else { return }
         var updated = settings
         change(&updated)
-
-        Task {
-            savingData += 1
-            defer { savingData -= 1 }
-        let calendarSelectionChanged = updated.selectedCalendarIDs != settings.selectedCalendarIDs
-        do {
-            try await mutate { state in
-                state.settings = updated
-                state.events.append(.init(date: Date(), kind: "settings_changed", source: "app",
-                                          detail: String(data: try StudyStore.encoder.encode(updated), encoding: .utf8)))
-                for index in state.prompts.indices where [.prepared, .scheduled].contains(state.prompts[index].status) {
-                    state.prompts[index].status = .cancelled
-                    state.prompts[index].cancelledAt = Date()
-                    state.events.append(.init(date: Date(), kind: "cancelled_settings_changed", promptID: state.prompts[index].id, source: "app"))
-                }
-            }
-            notifications.remove(state.prompts.filter { $0.status == .cancelled }.map(\.id))
-            if calendarSelectionChanged { context = nil; decision = nil }
-            if updated.monitoring {
-                scheduleRefresh()
-                startObservers()
-                Task { await evaluate(source: "settings_changed") }
-            } else {
-                services.health.stopObserving()
-                setPendingRefresh(nil)
-                record(.init(date: Date(), kind: "background_refresh_deactivated", source: "scheduler",
-                             detail: "A previously requested OS callback may still arrive; it will not collect data while paused."))
-            }
-            publishComplications()
-        } catch { message = error.localizedDescription }
+        guard updated != settings else { return }
+        pendingSettings = updated
+        if !updated.monitoring {
+            evaluationTask?.cancel()
+            services.health.stopObserving()
         }
+        guard settingsSaveTask == nil else { return }
+        settingsSaveTask = Task { await savePendingSettings() }
+    }
+
+    private func savePendingSettings() async {
+        defer { settingsSaveTask = nil }
+        let originalCalendarSelection = state.settings.selectedCalendarIDs
+        while let requested = pendingSettings {
+            do {
+                guard let store else { throw StudyStoreError.unsupportedSchema }
+                try await store.saveSettings(requested)
+                revision += 1
+                exportURLs = []
+                if pendingSettings == requested { pendingSettings = nil }
+            } catch {
+                pendingSettings = nil
+                message = "Could not save settings. Your last saved settings have been restored: \(error.localizedDescription)"
+            }
+        }
+        notifications.remove(state.prompts.filter { $0.status == .cancelled }.map(\.id))
+        if originalCalendarSelection != settings.selectedCalendarIDs { context = nil; decision = nil }
+        if settings.monitoring {
+            scheduleRefresh()
+            startObservers()
+            Task { await evaluate(source: "settings_changed") }
+        } else {
+            services.health.stopObserving()
+            setPendingRefresh(nil)
+            record(.init(date: Date(), kind: "background_refresh_deactivated", source: "scheduler",
+                         detail: "A previously requested OS callback may still arrive; it will not collect data while paused."))
+        }
+        publishComplications()
     }
 
     func requestHealth() async {
